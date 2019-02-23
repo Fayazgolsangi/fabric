@@ -25,8 +25,8 @@ import (
 )
 
 const (
-	examplePluginPackage = "github.com/hyperledger/fabric/examples/plugins/scc"
-	pluginName           = "testscc"
+	testPluginPackage = "github.com/hyperledger/fabric/core/scc/test-plugin"
+	pluginName        = "testscc"
 )
 
 func TestLoadSCCPlugin(t *testing.T) {
@@ -34,7 +34,7 @@ func TestLoadSCCPlugin(t *testing.T) {
 	require.NoError(t, err)
 
 	pluginPath := filepath.Join(tmpdir, "scc-plugin.so")
-	buildExamplePlugin(t, pluginPath, examplePluginPackage)
+	buildTestPlugin(t, pluginPath, testPluginPackage)
 	defer os.RemoveAll(tmpdir)
 
 	testConfig := fmt.Sprintf(`
@@ -59,8 +59,16 @@ func TestLoadSCCPluginInvalid(t *testing.T) {
 	assert.Panics(t, func() { loadPlugin("missing.so") }, "expected panic with invalid path")
 }
 
-func buildExamplePlugin(t *testing.T, path, pluginPackage string) {
-	cmd := exec.Command("go", "build", "-tags", goBuildTags, "-o", path, "-buildmode=plugin", pluginPackage)
+// raceEnabled is set to true when the race build tag is enabled.
+// see race_test.go
+var raceEnabled bool
+
+func buildTestPlugin(t *testing.T, path, pluginPackage string) {
+	cmd := exec.Command("go", "build", "-o", path, "-buildmode=plugin")
+	if raceEnabled {
+		cmd.Args = append(cmd.Args, "-race")
+	}
+	cmd.Args = append(cmd.Args, pluginPackage)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("Error: %s, Could not build plugin: %s", err, output)

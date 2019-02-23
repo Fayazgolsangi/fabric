@@ -22,6 +22,7 @@ import (
 
 	"github.com/hyperledger/fabric/bccsp/utils"
 	"github.com/hyperledger/fabric/common/tools/cryptogen/csp"
+	"github.com/pkg/errors"
 )
 
 type CA struct {
@@ -59,7 +60,10 @@ func NewCA(baseDir, org, name, country, province, locality, orgUnit, streetAddre
 				template.KeyUsage |= x509.KeyUsageDigitalSignature |
 					x509.KeyUsageKeyEncipherment | x509.KeyUsageCertSign |
 					x509.KeyUsageCRLSign
-				template.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageAny}
+				template.ExtKeyUsage = []x509.ExtKeyUsage{
+					x509.ExtKeyUsageClientAuth,
+					x509.ExtKeyUsageServerAuth,
+				}
 
 				//set the organization for the subject
 				subject := subjectTemplateAdditional(country, province, locality, orgUnit, streetAddress, postalCode)
@@ -170,8 +174,8 @@ func x509Template() x509.Certificate {
 
 	// set expiry to around 10 years
 	expiry := 3650 * 24 * time.Hour
-	// backdate 5 min
-	notBefore := time.Now().Add(-5 * time.Minute).UTC()
+	// round minute and backdate 5 minutes
+	notBefore := time.Now().Round(time.Minute).Add(-5 * time.Minute).UTC()
 
 	//basic template to use
 	x509 := x509.Certificate{
@@ -226,7 +230,13 @@ func LoadCertificateECDSA(certPath string) (*x509.Certificate, error) {
 				return err
 			}
 			block, _ := pem.Decode(rawCert)
+			if block == nil || block.Type != "CERTIFICATE" {
+				return errors.Errorf("%s: wrong PEM encoding", path)
+			}
 			cert, err = utils.DERToX509Certificate(block.Bytes)
+			if err != nil {
+				return errors.Errorf("%s: wrong DER encoding", path)
+			}
 		}
 		return nil
 	}

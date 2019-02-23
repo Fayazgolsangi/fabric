@@ -9,10 +9,11 @@ package kvledger
 import (
 	"testing"
 
-	"github.com/hyperledger/fabric/protos/ledger/rwset/kvrwset"
-
 	"github.com/hyperledger/fabric/common/ledger/testutil"
+	"github.com/hyperledger/fabric/common/metrics/disabled"
 	"github.com/hyperledger/fabric/core/ledger"
+	"github.com/hyperledger/fabric/core/ledger/mock"
+	"github.com/hyperledger/fabric/protos/ledger/rwset/kvrwset"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -26,7 +27,11 @@ func TestStateListener(t *testing.T) {
 	channelid := "testLedger"
 	namespace := "testchaincode"
 	mockListener := &mockStateListener{namespace: namespace}
-	provider.Initialize([]ledger.StateListener{mockListener})
+	provider.Initialize(&ledger.Initializer{
+		DeployedChaincodeInfoProvider: &mock.DeployedChaincodeInfoProvider{},
+		StateListeners:                []ledger.StateListener{mockListener},
+		MetricsProvider:               &disabled.Provider{},
+	})
 
 	bg, gb := testutil.NewBlockGenerator(t, channelid, false)
 	lgr, err := provider.Create(gb)
@@ -97,9 +102,10 @@ func (l *mockStateListener) InterestedInNamespaces() []string {
 	return []string{l.namespace}
 }
 
-func (l *mockStateListener) HandleStateUpdates(channelName string, stateUpdates ledger.StateUpdates, committingBlockNum uint64) error {
+func (l *mockStateListener) HandleStateUpdates(trigger *ledger.StateUpdateTrigger) error {
+	channelName, stateUpdates := trigger.LedgerID, trigger.StateUpdates
 	l.channelName = channelName
-	l.kvWrites = stateUpdates[l.namespace].([]*kvrwset.KVWrite)
+	l.kvWrites = stateUpdates[l.namespace].PublicUpdates
 	return nil
 }
 

@@ -221,6 +221,30 @@ type PeerLedger struct {
 		result1 ledger.ConfigHistoryRetriever
 		result2 error
 	}
+	CommitPvtDataOfOldBlocksStub        func(blockPvtData []*ledger.BlockPvtData) ([]*ledger.PvtdataHashMismatch, error)
+	commitPvtDataOfOldBlocksMutex       sync.RWMutex
+	commitPvtDataOfOldBlocksArgsForCall []struct {
+		blockPvtData []*ledger.BlockPvtData
+	}
+	commitPvtDataOfOldBlocksReturns struct {
+		result1 []*ledger.PvtdataHashMismatch
+		result2 error
+	}
+	commitPvtDataOfOldBlocksReturnsOnCall map[int]struct {
+		result1 []*ledger.PvtdataHashMismatch
+		result2 error
+	}
+	GetMissingPvtDataTrackerStub        func() (ledger.MissingPvtDataTracker, error)
+	getMissingPvtDataTrackerMutex       sync.RWMutex
+	getMissingPvtDataTrackerArgsForCall []struct{}
+	getMissingPvtDataTrackerReturns     struct {
+		result1 ledger.MissingPvtDataTracker
+		result2 error
+	}
+	getMissingPvtDataTrackerReturnsOnCall map[int]struct {
+		result1 ledger.MissingPvtDataTracker
+		result2 error
+	}
 	invocations      map[string][][]interface{}
 	invocationsMutex sync.RWMutex
 }
@@ -1066,6 +1090,105 @@ func (fake *PeerLedger) GetConfigHistoryRetrieverReturnsOnCall(i int, result1 le
 	}{result1, result2}
 }
 
+func (fake *PeerLedger) CommitPvtDataOfOldBlocks(blockPvtData []*ledger.BlockPvtData) ([]*ledger.PvtdataHashMismatch, error) {
+	var blockPvtDataCopy []*ledger.BlockPvtData
+	if blockPvtData != nil {
+		blockPvtDataCopy = make([]*ledger.BlockPvtData, len(blockPvtData))
+		copy(blockPvtDataCopy, blockPvtData)
+	}
+	fake.commitPvtDataOfOldBlocksMutex.Lock()
+	ret, specificReturn := fake.commitPvtDataOfOldBlocksReturnsOnCall[len(fake.commitPvtDataOfOldBlocksArgsForCall)]
+	fake.commitPvtDataOfOldBlocksArgsForCall = append(fake.commitPvtDataOfOldBlocksArgsForCall, struct {
+		blockPvtData []*ledger.BlockPvtData
+	}{blockPvtDataCopy})
+	fake.recordInvocation("CommitPvtDataOfOldBlocks", []interface{}{blockPvtDataCopy})
+	fake.commitPvtDataOfOldBlocksMutex.Unlock()
+	if fake.CommitPvtDataOfOldBlocksStub != nil {
+		return fake.CommitPvtDataOfOldBlocksStub(blockPvtData)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fake.commitPvtDataOfOldBlocksReturns.result1, fake.commitPvtDataOfOldBlocksReturns.result2
+}
+
+func (fake *PeerLedger) CommitPvtDataOfOldBlocksCallCount() int {
+	fake.commitPvtDataOfOldBlocksMutex.RLock()
+	defer fake.commitPvtDataOfOldBlocksMutex.RUnlock()
+	return len(fake.commitPvtDataOfOldBlocksArgsForCall)
+}
+
+func (fake *PeerLedger) CommitPvtDataOfOldBlocksArgsForCall(i int) []*ledger.BlockPvtData {
+	fake.commitPvtDataOfOldBlocksMutex.RLock()
+	defer fake.commitPvtDataOfOldBlocksMutex.RUnlock()
+	return fake.commitPvtDataOfOldBlocksArgsForCall[i].blockPvtData
+}
+
+func (fake *PeerLedger) CommitPvtDataOfOldBlocksReturns(result1 []*ledger.PvtdataHashMismatch, result2 error) {
+	fake.CommitPvtDataOfOldBlocksStub = nil
+	fake.commitPvtDataOfOldBlocksReturns = struct {
+		result1 []*ledger.PvtdataHashMismatch
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *PeerLedger) CommitPvtDataOfOldBlocksReturnsOnCall(i int, result1 []*ledger.PvtdataHashMismatch, result2 error) {
+	fake.CommitPvtDataOfOldBlocksStub = nil
+	if fake.commitPvtDataOfOldBlocksReturnsOnCall == nil {
+		fake.commitPvtDataOfOldBlocksReturnsOnCall = make(map[int]struct {
+			result1 []*ledger.PvtdataHashMismatch
+			result2 error
+		})
+	}
+	fake.commitPvtDataOfOldBlocksReturnsOnCall[i] = struct {
+		result1 []*ledger.PvtdataHashMismatch
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *PeerLedger) GetMissingPvtDataTracker() (ledger.MissingPvtDataTracker, error) {
+	fake.getMissingPvtDataTrackerMutex.Lock()
+	ret, specificReturn := fake.getMissingPvtDataTrackerReturnsOnCall[len(fake.getMissingPvtDataTrackerArgsForCall)]
+	fake.getMissingPvtDataTrackerArgsForCall = append(fake.getMissingPvtDataTrackerArgsForCall, struct{}{})
+	fake.recordInvocation("GetMissingPvtDataTracker", []interface{}{})
+	fake.getMissingPvtDataTrackerMutex.Unlock()
+	if fake.GetMissingPvtDataTrackerStub != nil {
+		return fake.GetMissingPvtDataTrackerStub()
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fake.getMissingPvtDataTrackerReturns.result1, fake.getMissingPvtDataTrackerReturns.result2
+}
+
+func (fake *PeerLedger) GetMissingPvtDataTrackerCallCount() int {
+	fake.getMissingPvtDataTrackerMutex.RLock()
+	defer fake.getMissingPvtDataTrackerMutex.RUnlock()
+	return len(fake.getMissingPvtDataTrackerArgsForCall)
+}
+
+func (fake *PeerLedger) GetMissingPvtDataTrackerReturns(result1 ledger.MissingPvtDataTracker, result2 error) {
+	fake.GetMissingPvtDataTrackerStub = nil
+	fake.getMissingPvtDataTrackerReturns = struct {
+		result1 ledger.MissingPvtDataTracker
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *PeerLedger) GetMissingPvtDataTrackerReturnsOnCall(i int, result1 ledger.MissingPvtDataTracker, result2 error) {
+	fake.GetMissingPvtDataTrackerStub = nil
+	if fake.getMissingPvtDataTrackerReturnsOnCall == nil {
+		fake.getMissingPvtDataTrackerReturnsOnCall = make(map[int]struct {
+			result1 ledger.MissingPvtDataTracker
+			result2 error
+		})
+	}
+	fake.getMissingPvtDataTrackerReturnsOnCall[i] = struct {
+		result1 ledger.MissingPvtDataTracker
+		result2 error
+	}{result1, result2}
+}
+
 func (fake *PeerLedger) Invocations() map[string][][]interface{} {
 	fake.invocationsMutex.RLock()
 	defer fake.invocationsMutex.RUnlock()
@@ -1105,6 +1228,10 @@ func (fake *PeerLedger) Invocations() map[string][][]interface{} {
 	defer fake.pruneMutex.RUnlock()
 	fake.getConfigHistoryRetrieverMutex.RLock()
 	defer fake.getConfigHistoryRetrieverMutex.RUnlock()
+	fake.commitPvtDataOfOldBlocksMutex.RLock()
+	defer fake.commitPvtDataOfOldBlocksMutex.RUnlock()
+	fake.getMissingPvtDataTrackerMutex.RLock()
+	defer fake.getMissingPvtDataTrackerMutex.RUnlock()
 	copiedInvocations := map[string][][]interface{}{}
 	for key, value := range fake.invocations {
 		copiedInvocations[key] = value

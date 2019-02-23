@@ -21,8 +21,10 @@ import (
 	"github.com/hyperledger/fabric/core/aclmgmt"
 	"github.com/hyperledger/fabric/core/aclmgmt/resources"
 	"github.com/hyperledger/fabric/core/chaincode/shim"
+	"github.com/hyperledger/fabric/core/committer/txvalidator/v20/plugindispatcher"
 	"github.com/hyperledger/fabric/core/common/ccprovider"
 	"github.com/hyperledger/fabric/core/common/sysccprovider"
+	"github.com/hyperledger/fabric/core/ledger"
 	"github.com/hyperledger/fabric/core/ledger/util"
 	"github.com/hyperledger/fabric/core/peer"
 	"github.com/hyperledger/fabric/core/policy"
@@ -35,17 +37,22 @@ import (
 
 // New creates a new instance of the CSCC.
 // Typically, only one will be created per peer instance.
-func New(ccp ccprovider.ChaincodeProvider, sccp sysccprovider.SystemChaincodeProvider, aclProvider aclmgmt.ACLProvider) *PeerConfiger {
+func New(ccp ccprovider.ChaincodeProvider, sccp sysccprovider.SystemChaincodeProvider,
+	aclProvider aclmgmt.ACLProvider, deployedCCInfoProvider ledger.DeployedChaincodeInfoProvider,
+	lr, nr plugindispatcher.LifecycleResources) *PeerConfiger {
 	return &PeerConfiger{
 		policyChecker: policy.NewPolicyChecker(
 			peer.NewChannelPolicyManagerGetter(),
 			mgmt.GetLocalMSP(),
 			mgmt.NewLocalMSPPrincipalGetter(),
 		),
-		configMgr:   peer.NewConfigSupport(),
-		ccp:         ccp,
-		sccp:        sccp,
-		aclProvider: aclProvider,
+		configMgr:              peer.NewConfigSupport(),
+		ccp:                    ccp,
+		sccp:                   sccp,
+		aclProvider:            aclProvider,
+		deployedCCInfoProvider: deployedCCInfoProvider,
+		legacyLifecycle:        lr,
+		newLifecycle:           nr,
 	}
 }
 
@@ -61,11 +68,14 @@ func (e *PeerConfiger) Enabled() bool             { return true }
 // configuration transaction coming in from the ordering service, the
 // committer calls this system chaincode to process the transaction.
 type PeerConfiger struct {
-	policyChecker policy.PolicyChecker
-	configMgr     config.Manager
-	ccp           ccprovider.ChaincodeProvider
-	sccp          sysccprovider.SystemChaincodeProvider
-	aclProvider   aclmgmt.ACLProvider
+	policyChecker          policy.PolicyChecker
+	configMgr              config.Manager
+	ccp                    ccprovider.ChaincodeProvider
+	sccp                   sysccprovider.SystemChaincodeProvider
+	aclProvider            aclmgmt.ACLProvider
+	deployedCCInfoProvider ledger.DeployedChaincodeInfoProvider
+	legacyLifecycle        plugindispatcher.LifecycleResources
+	newLifecycle           plugindispatcher.LifecycleResources
 }
 
 var cnflogger = flogging.MustGetLogger("cscc")
@@ -141,14 +151,14 @@ func (e *PeerConfiger) InvokeNoShim(args [][]byte, sp *pb.SignedProposal) pb.Res
 				"channel id from the block due to [%s]", err))
 		}
 
+		// 1. check config block's format and capabilities requirement.
 		if err := validateConfigBlock(block); err != nil {
 			return shim.Error(fmt.Sprintf("\"JoinChain\" for chainID = %s failed because of validation "+
 				"of configuration block, because of %s", cid, err))
 		}
 
-		// 2. check local MSP Admins policy
-		// TODO: move to ACLProvider once it will support chainless ACLs
-		if err = e.policyChecker.CheckPolicyNoChannel(mgmt.Admins, sp); err != nil {
+		// 2. check join policy.
+		if err = e.aclProvider.CheckACL(resources.Cscc_JoinChain, "", sp); err != nil {
 			return shim.Error(fmt.Sprintf("access denied for [%s][%s]: [%s]", fname, cid, err))
 		}
 
@@ -161,7 +171,7 @@ func (e *PeerConfiger) InvokeNoShim(args [][]byte, sp *pb.SignedProposal) pb.Res
 			block.Metadata.Metadata[common.BlockMetadataIndex_TRANSACTIONS_FILTER] = txsFilter
 		}
 
-		return joinChain(cid, block, e.ccp, e.sccp)
+		return joinChain(cid, block, e.ccp, e.sccp, e.deployedCCInfoProvider, e.legacyLifecycle, e.newLifecycle)
 	case GetConfigBlock:
 		// 2. check policy
 		if err = e.aclProvider.CheckACL(resources.Cscc_GetConfigBlock, string(args[1]), sp); err != nil {
@@ -183,9 +193,8 @@ func (e *PeerConfiger) InvokeNoShim(args [][]byte, sp *pb.SignedProposal) pb.Res
 		}
 		return e.simulateConfigTreeUpdate(args[1], args[2])
 	case GetChannels:
-		// 2. check local MSP Members policy
-		// TODO: move to ACLProvider once it will support chainless ACLs
-		if err = e.policyChecker.CheckPolicyNoChannel(mgmt.Members, sp); err != nil {
+		// 2. check get channels policy
+		if err = e.aclProvider.CheckACL(resources.Cscc_GetChannels, "", sp); err != nil {
 			return shim.Error(fmt.Sprintf("access denied for [%s]: %s", fname, err))
 		}
 
@@ -226,14 +235,19 @@ func validateConfigBlock(block *common.Block) error {
 			"configuration group", channelconfig.ApplicationGroupKey)
 	}
 
+	// Check the capabilities requirement
+	if err = channelconfig.ValidateCapabilities(block); err != nil {
+		return errors.Errorf("Failed capabilities check: [%s]", err)
+	}
+
 	return nil
 }
 
 // joinChain will join the specified chain in the configuration block.
 // Since it is the first block, it is the genesis block containing configuration
 // for this chain, so we want to update the Chain object with this info
-func joinChain(chainID string, block *common.Block, ccp ccprovider.ChaincodeProvider, sccp sysccprovider.SystemChaincodeProvider) pb.Response {
-	if err := peer.CreateChainFromBlock(block, ccp, sccp); err != nil {
+func joinChain(chainID string, block *common.Block, ccp ccprovider.ChaincodeProvider, sccp sysccprovider.SystemChaincodeProvider, deployedCCInfoProvider ledger.DeployedChaincodeInfoProvider, lr, nr plugindispatcher.LifecycleResources) pb.Response {
+	if err := peer.CreateChainFromBlock(block, ccp, sccp, deployedCCInfoProvider, lr, nr); err != nil {
 		return shim.Error(err.Error())
 	}
 

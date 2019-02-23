@@ -16,8 +16,10 @@ modularity and versatility for a broad set of industry use cases.
    :maxdepth: 1
 
    whatis
+   whatsnew
    key_concepts
    getting_started
+   developapps/developing_applications
    tutorials
    ops_guide
    command_ref

@@ -11,7 +11,6 @@ import (
 	"compress/gzip"
 	"fmt"
 	"io"
-
 	"strings"
 
 	"github.com/hyperledger/fabric/common/flogging"
@@ -19,16 +18,7 @@ import (
 	cutil "github.com/hyperledger/fabric/core/container/util"
 )
 
-//MetadataProvider is implemented by each platform in a platform specific manner.
-//It can process metadata stored in ChaincodeDeploymentSpec in different formats.
-//The common format is targz. Currently users expect the metadata to be presented
-//as tar file entries (directly extracted from chaincode stored in targz format).
-//In future, we would like provide better abstraction by extending the interface
-type MetadataProvider interface {
-	GetMetadataAsTarEntries() ([]byte, error)
-}
-
-// Interface for validating the specification and and writing the package for
+// Interface for validating the specification and writing the package for
 // the given platform
 type Platform interface {
 	Name() string
@@ -37,7 +27,7 @@ type Platform interface {
 	GetDeploymentPayload(path string) ([]byte, error)
 	GenerateDockerfile() (string, error)
 	GenerateDockerBuild(path string, code []byte, tw *tar.Writer) error
-	GetMetadataProvider(code []byte) MetadataProvider
+	GetMetadataAsTarEntries(code []byte) ([]byte, error)
 }
 
 type PackageWriter interface {
@@ -55,7 +45,7 @@ type Registry struct {
 	PackageWriter PackageWriter
 }
 
-var logger = flogging.MustGetLogger("chaincode-platform")
+var logger = flogging.MustGetLogger("chaincode.platform")
 
 func NewRegistry(platformTypes ...Platform) *Registry {
 	platforms := make(map[string]Platform)
@@ -87,12 +77,12 @@ func (r *Registry) ValidateDeploymentSpec(ccType string, codePackage []byte) err
 	return platform.ValidateCodePackage(codePackage)
 }
 
-func (r *Registry) GetMetadataProvider(ccType string, codePackage []byte) (MetadataProvider, error) {
+func (r *Registry) GetMetadataProvider(ccType string, codePackage []byte) ([]byte, error) {
 	platform, ok := r.Platforms[ccType]
 	if !ok {
 		return nil, fmt.Errorf("Unknown chaincodeType: %s", ccType)
 	}
-	return platform.GetMetadataProvider(codePackage), nil
+	return platform.GetMetadataAsTarEntries(codePackage)
 }
 
 func (r *Registry) GetDeploymentPayload(ccType, path string) ([]byte, error) {
@@ -124,11 +114,10 @@ func (r *Registry) GenerateDockerfile(ccType, name, version string) (string, err
 	// ----------------------------------------------------------------------------------------------------
 	// Add some handy labels
 	// ----------------------------------------------------------------------------------------------------
-	buf = append(buf, fmt.Sprintf("LABEL %s.chaincode.id.name=\"%s\" \\", metadata.BaseDockerLabel, name))
-	buf = append(buf, fmt.Sprintf("      %s.chaincode.id.version=\"%s\" \\", metadata.BaseDockerLabel, version))
-	buf = append(buf, fmt.Sprintf("      %s.chaincode.type=\"%s\" \\", metadata.BaseDockerLabel, ccType))
-	buf = append(buf, fmt.Sprintf("      %s.version=\"%s\" \\", metadata.BaseDockerLabel, metadata.Version))
-	buf = append(buf, fmt.Sprintf("      %s.base.version=\"%s\"", metadata.BaseDockerLabel, metadata.BaseVersion))
+	buf = append(buf, fmt.Sprintf(`LABEL %s.chaincode.id.name="%s" \`, metadata.BaseDockerLabel, name))
+	buf = append(buf, fmt.Sprintf(`      %s.chaincode.id.version="%s" \`, metadata.BaseDockerLabel, version))
+	buf = append(buf, fmt.Sprintf(`      %s.chaincode.type="%s" \`, metadata.BaseDockerLabel, ccType))
+	buf = append(buf, fmt.Sprintf(`      %s.version="%s"`, metadata.BaseDockerLabel, metadata.Version))
 	// ----------------------------------------------------------------------------------------------------
 	// Then augment it with any general options
 	// ----------------------------------------------------------------------------------------------------
@@ -161,7 +150,7 @@ func (r *Registry) StreamDockerBuild(ccType, path string, codePackage []byte, in
 	for name, data := range inputFiles {
 		err = r.PackageWriter.Write(name, data, tw)
 		if err != nil {
-			return fmt.Errorf("Failed to inject \"%s\": %s", name, err)
+			return fmt.Errorf(`Failed to inject "%s": %s`, name, err)
 		}
 	}
 

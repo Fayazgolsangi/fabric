@@ -8,6 +8,7 @@ SPDX-License-Identifier: Apache-2.0
 package chaincode
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -34,7 +35,6 @@ import (
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/net/context"
 )
 
 func TestCheckChaincodeCmdParamsWithNewCallingSchema(t *testing.T) {
@@ -137,8 +137,6 @@ func TestCheckInvalidJSON(t *testing.T) {
 }
 
 func TestGetOrdererEndpointFromConfigTx(t *testing.T) {
-	initMSP()
-
 	signer, err := common.GetDefaultSigner()
 	assert.NoError(t, err)
 
@@ -162,8 +160,6 @@ func TestGetOrdererEndpointFromConfigTx(t *testing.T) {
 }
 
 func TestGetOrdererEndpointFail(t *testing.T) {
-	initMSP()
-
 	signer, err := common.GetDefaultSigner()
 	assert.NoError(t, err)
 
@@ -186,7 +182,9 @@ const sampleCollectionConfigGood = `[
 		"policy": "OR('A.member', 'B.member')",
 		"requiredPeerCount": 3,
 		"maxPeerCount": 483279847,
-		"blockToLive":10
+		"blockToLive":10,
+		"memberOnlyRead": true,
+		"memberOnlyWrite": true
 	}
 ]`
 
@@ -212,6 +210,8 @@ func TestCollectionParsing(t *testing.T) {
 	assert.Equal(t, "foo", conf.Name)
 	assert.Equal(t, pol, conf.MemberOrgsPolicy.GetSignaturePolicy())
 	assert.Equal(t, 10, int(conf.BlockToLive))
+	assert.Equal(t, true, conf.MemberOnlyRead)
+	assert.Equal(t, true, conf.MemberOnlyWrite)
 	t.Logf("conf=%s", conf)
 
 	cc, err = getCollectionConfigFromBytes([]byte(sampleCollectionConfigBad))
@@ -439,7 +439,11 @@ func TestDeliverGroupWait(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	// success
-	mockConn := getMockDeliverConnectionResponseWithTxID("txid0")
+	mockConn := &mock.Deliver{}
+	filteredResp := &pb.DeliverResponse{
+		Type: &pb.DeliverResponse_FilteredBlock{FilteredBlock: createFilteredBlock("txid0")},
+	}
+	mockConn.RecvReturns(filteredResp, nil)
 	mockDeliverClients := []*deliverClient{
 		{
 			Connection: mockConn,
@@ -533,8 +537,6 @@ func TestDeliverGroupWait(t *testing.T) {
 func TestChaincodeInvokeOrQuery_waitForEvent(t *testing.T) {
 	defer resetFlags()
 
-	// success - deliver client returns event with expected txid
-	InitMSP()
 	waitForEvent = true
 	mockCF, err := getMockChaincodeCmdFactory()
 	assert.NoError(t, err)
@@ -542,81 +544,83 @@ func TestChaincodeInvokeOrQuery_waitForEvent(t *testing.T) {
 	channelID := "testchannel"
 	txID := "txid0"
 
-	_, err = ChaincodeInvokeOrQuery(
-		&pb.ChaincodeSpec{},
-		channelID,
-		txID,
-		true,
-		mockCF.Signer,
-		mockCF.Certificate,
-		mockCF.EndorserClients,
-		mockCF.DeliverClients,
-		mockCF.BroadcastClient,
-	)
-	assert.NoError(t, err)
+	t.Run("success - deliver clients returns event with expected txid", func(t *testing.T) {
+		_, err = ChaincodeInvokeOrQuery(
+			&pb.ChaincodeSpec{},
+			channelID,
+			txID,
+			true,
+			mockCF.Signer,
+			mockCF.Certificate,
+			mockCF.EndorserClients,
+			mockCF.DeliverClients,
+			mockCF.BroadcastClient,
+		)
+		assert.NoError(t, err)
+	})
 
-	// success - one deliver client first receives block without txid and
-	// then one with txid
-	filteredBlocks := []*pb.FilteredBlock{
-		createFilteredBlock("theseare", "notthetxidsyouarelookingfor"),
-		createFilteredBlock("txid0"),
-	}
-	mockDCTwoBlocks := getMockDeliverClientRespondsWithFilteredBlocks(filteredBlocks)
-	mockDC := getMockDeliverClientResponseWithTxID("txid0")
-	mockDeliverClients := []api.PeerDeliverClient{mockDCTwoBlocks, mockDC}
+	t.Run("success - one deliver client first receives block without txid and then one with txid", func(t *testing.T) {
+		filteredBlocks := []*pb.FilteredBlock{
+			createFilteredBlock("theseare", "notthetxidsyouarelookingfor"),
+			createFilteredBlock("txid0"),
+		}
+		mockDCTwoBlocks := getMockDeliverClientRespondsWithFilteredBlocks(filteredBlocks)
+		mockDC := getMockDeliverClientResponseWithTxID("txid0")
+		mockDeliverClients := []api.PeerDeliverClient{mockDCTwoBlocks, mockDC}
 
-	_, err = ChaincodeInvokeOrQuery(
-		&pb.ChaincodeSpec{},
-		channelID,
-		txID,
-		true,
-		mockCF.Signer,
-		mockCF.Certificate,
-		mockCF.EndorserClients,
-		mockDeliverClients,
-		mockCF.BroadcastClient,
-	)
-	assert.NoError(t, err)
+		_, err = ChaincodeInvokeOrQuery(
+			&pb.ChaincodeSpec{},
+			channelID,
+			txID,
+			true,
+			mockCF.Signer,
+			mockCF.Certificate,
+			mockCF.EndorserClients,
+			mockDeliverClients,
+			mockCF.BroadcastClient,
+		)
+		assert.NoError(t, err)
+	})
 
-	// failure - one of the deliver clients returns error
-	mockDCErr := getMockDeliverClientWithErr("moist")
-	mockDC = getMockDeliverClient()
-	mockDeliverClients = []api.PeerDeliverClient{mockDCErr, mockDC}
+	t.Run("failure - one of the deliver clients returns error", func(t *testing.T) {
+		mockDCErr := getMockDeliverClientWithErr("moist")
+		mockDC := getMockDeliverClientResponseWithTxID("txid0")
+		mockDeliverClients := []api.PeerDeliverClient{mockDCErr, mockDC}
 
-	_, err = ChaincodeInvokeOrQuery(
-		&pb.ChaincodeSpec{},
-		channelID,
-		txID,
-		true,
-		mockCF.Signer,
-		mockCF.Certificate,
-		mockCF.EndorserClients,
-		mockDeliverClients,
-		mockCF.BroadcastClient,
-	)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "moist")
+		_, err = ChaincodeInvokeOrQuery(
+			&pb.ChaincodeSpec{},
+			channelID,
+			txID,
+			true,
+			mockCF.Signer,
+			mockCF.Certificate,
+			mockCF.EndorserClients,
+			mockDeliverClients,
+			mockCF.BroadcastClient,
+		)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "moist")
+	})
 
-	// failure - timeout occurs - both deliver clients don't return an event
-	// with the expected txid
-	mockDC = getMockDeliverClientResponseWithTxID("garbage")
-	delayChan := make(chan struct{})
-	mockDCDelay := getMockDeliverClientRespondAfterDelay(delayChan)
-	mockDeliverClients = []api.PeerDeliverClient{mockDC, mockDCDelay}
-	waitForEventTimeout = 10 * time.Millisecond
+	t.Run(" failure - timeout occurs - both deliver clients don't return an event with the expected txid before timeout", func(t *testing.T) {
+		delayChan := make(chan struct{})
+		mockDCDelay := getMockDeliverClientRespondAfterDelay(delayChan, "txid0")
+		mockDeliverClients := []api.PeerDeliverClient{mockDCDelay, mockDCDelay}
+		waitForEventTimeout = 10 * time.Millisecond
 
-	_, err = ChaincodeInvokeOrQuery(
-		&pb.ChaincodeSpec{},
-		channelID,
-		txID,
-		true,
-		mockCF.Signer,
-		mockCF.Certificate,
-		mockCF.EndorserClients,
-		mockDeliverClients,
-		mockCF.BroadcastClient,
-	)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "timed out")
-	close(delayChan)
+		_, err = ChaincodeInvokeOrQuery(
+			&pb.ChaincodeSpec{},
+			channelID,
+			txID,
+			true,
+			mockCF.Signer,
+			mockCF.Certificate,
+			mockCF.EndorserClients,
+			mockDeliverClients,
+			mockCF.BroadcastClient,
+		)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "timed out")
+		close(delayChan)
+	})
 }

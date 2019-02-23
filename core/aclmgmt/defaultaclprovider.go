@@ -23,9 +23,14 @@ const (
 	CHANNELWRITERS = policies.ChannelApplicationWriters
 )
 
+type defaultACLProvider interface {
+	ACLProvider
+	IsPtypePolicy(resName string) bool
+}
+
 //defaultACLProvider used if resource-based ACL Provider is not provided or
 //if it does not contain a policy for the named resource
-type defaultACLProvider struct {
+type defaultACLProviderImpl struct {
 	policyChecker policy.PolicyChecker
 
 	//peer wide policy (currently not used)
@@ -35,14 +40,14 @@ type defaultACLProvider struct {
 	cResourcePolicyMap map[string]string
 }
 
-func NewDefaultACLProvider() ACLProvider {
-	d := &defaultACLProvider{}
+func newDefaultACLProvider() defaultACLProvider {
+	d := &defaultACLProviderImpl{}
 	d.initialize()
 
 	return d
 }
 
-func (d *defaultACLProvider) initialize() {
+func (d *defaultACLProviderImpl) initialize() {
 	d.policyChecker = policy.NewPolicyChecker(
 		peer.NewChannelPolicyManagerGetter(),
 		mgmt.GetLocalMSP(),
@@ -54,8 +59,8 @@ func (d *defaultACLProvider) initialize() {
 
 	//-------------- LSCC --------------
 	//p resources (implemented by the chaincode currently)
-	d.pResourcePolicyMap[resources.Lscc_Install] = ""
-	d.pResourcePolicyMap[resources.Lscc_GetInstalledChaincodes] = ""
+	d.pResourcePolicyMap[resources.Lscc_Install] = mgmt.Admins
+	d.pResourcePolicyMap[resources.Lscc_GetInstalledChaincodes] = mgmt.Admins
 
 	//c resources
 	d.cResourcePolicyMap[resources.Lscc_Deploy] = ""  //ACL check covered by PROPOSAL
@@ -64,6 +69,7 @@ func (d *defaultACLProvider) initialize() {
 	d.cResourcePolicyMap[resources.Lscc_GetDeploymentSpec] = CHANNELREADERS
 	d.cResourcePolicyMap[resources.Lscc_GetChaincodeData] = CHANNELREADERS
 	d.cResourcePolicyMap[resources.Lscc_GetInstantiatedChaincodes] = CHANNELREADERS
+	d.cResourcePolicyMap[resources.Lscc_GetCollectionsConfig] = CHANNELREADERS
 
 	//-------------- QSCC --------------
 	//p resources (none)
@@ -77,8 +83,8 @@ func (d *defaultACLProvider) initialize() {
 
 	//--------------- CSCC resources -----------
 	//p resources (implemented by the chaincode currently)
-	d.pResourcePolicyMap[resources.Cscc_JoinChain] = ""
-	d.pResourcePolicyMap[resources.Cscc_GetChannels] = ""
+	d.pResourcePolicyMap[resources.Cscc_JoinChain] = mgmt.Admins
+	d.pResourcePolicyMap[resources.Cscc_GetChannels] = mgmt.Members
 
 	//c resources
 	d.cResourcePolicyMap[resources.Cscc_GetConfigBlock] = CHANNELREADERS
@@ -89,6 +95,9 @@ func (d *defaultACLProvider) initialize() {
 	//Peer resources
 	d.cResourcePolicyMap[resources.Peer_Propose] = CHANNELWRITERS
 	d.cResourcePolicyMap[resources.Peer_ChaincodeToChaincode] = CHANNELWRITERS
+	d.cResourcePolicyMap[resources.Token_Issue] = CHANNELWRITERS
+	d.cResourcePolicyMap[resources.Token_Transfer] = CHANNELWRITERS
+	d.cResourcePolicyMap[resources.Token_List] = CHANNELREADERS
 
 	//Event resources
 	d.cResourcePolicyMap[resources.Event_Block] = CHANNELREADERS
@@ -96,7 +105,7 @@ func (d *defaultACLProvider) initialize() {
 }
 
 //this should cover an exhaustive list of everything called from the peer
-func (d *defaultACLProvider) defaultPolicy(resName string, cprovider bool) string {
+func (d *defaultACLProviderImpl) defaultPolicy(resName string, cprovider bool) string {
 	var pol string
 	if cprovider {
 		pol = d.cResourcePolicyMap[resName]
@@ -106,23 +115,36 @@ func (d *defaultACLProvider) defaultPolicy(resName string, cprovider bool) strin
 	return pol
 }
 
+func (d *defaultACLProviderImpl) IsPtypePolicy(resName string) bool {
+	_, ok := d.pResourcePolicyMap[resName]
+	return ok
+}
+
 //CheckACL provides default (v 1.0) behavior by mapping resources to their ACL for a channel
-func (d *defaultACLProvider) CheckACL(resName string, channelID string, idinfo interface{}) error {
-	policy := d.defaultPolicy(resName, true)
-	if policy == "" {
-		aclLogger.Errorf("Unmapped policy for %s", resName)
-		return fmt.Errorf("Unmapped policy for %s", resName)
+func (d *defaultACLProviderImpl) CheckACL(resName string, channelID string, idinfo interface{}) error {
+	//the default behavior is to use p type if defined and use channeless policy checks
+	policy := d.pResourcePolicyMap[resName]
+	if policy != "" {
+		channelID = ""
+	} else {
+		policy = d.cResourcePolicyMap[resName]
+		if policy == "" {
+			aclLogger.Errorf("Unmapped policy for %s", resName)
+			return fmt.Errorf("Unmapped policy for %s", resName)
+		}
 	}
 
-	switch idinfo.(type) {
+	switch typedData := idinfo.(type) {
 	case *pb.SignedProposal:
-		return d.policyChecker.CheckPolicy(channelID, policy, idinfo.(*pb.SignedProposal))
+		return d.policyChecker.CheckPolicy(channelID, policy, typedData)
 	case *common.Envelope:
-		sd, err := idinfo.(*common.Envelope).AsSignedData()
+		sd, err := typedData.AsSignedData()
 		if err != nil {
 			return err
 		}
 		return d.policyChecker.CheckPolicyBySignedData(channelID, policy, sd)
+	case []*common.SignedData:
+		return d.policyChecker.CheckPolicyBySignedData(channelID, policy, typedData)
 	default:
 		aclLogger.Errorf("Unmapped id on checkACL %s", resName)
 		return fmt.Errorf("Unknown id on checkACL %s", resName)

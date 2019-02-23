@@ -9,11 +9,11 @@ import (
 )
 
 type Lifecycle struct {
-	ChaincodeDefinitionStub        func(chaincodeName string, txSim ledger.QueryExecutor) (ccprovider.ChaincodeDefinition, error)
+	ChaincodeDefinitionStub        func(chaincodeName string, qe ledger.SimpleQueryExecutor) (ccprovider.ChaincodeDefinition, error)
 	chaincodeDefinitionMutex       sync.RWMutex
 	chaincodeDefinitionArgsForCall []struct {
 		chaincodeName string
-		txSim         ledger.QueryExecutor
+		qe            ledger.SimpleQueryExecutor
 	}
 	chaincodeDefinitionReturns struct {
 		result1 ccprovider.ChaincodeDefinition
@@ -23,11 +23,11 @@ type Lifecycle struct {
 		result1 ccprovider.ChaincodeDefinition
 		result2 error
 	}
-	ChaincodeContainerInfoStub        func(chainID string, chaincodeID string) (*ccprovider.ChaincodeContainerInfo, error)
+	ChaincodeContainerInfoStub        func(chaincodeName string, qe ledger.SimpleQueryExecutor) (*ccprovider.ChaincodeContainerInfo, error)
 	chaincodeContainerInfoMutex       sync.RWMutex
 	chaincodeContainerInfoArgsForCall []struct {
-		chainID     string
-		chaincodeID string
+		chaincodeName string
+		qe            ledger.SimpleQueryExecutor
 	}
 	chaincodeContainerInfoReturns struct {
 		result1 *ccprovider.ChaincodeContainerInfo
@@ -41,17 +41,17 @@ type Lifecycle struct {
 	invocationsMutex sync.RWMutex
 }
 
-func (fake *Lifecycle) ChaincodeDefinition(chaincodeName string, txSim ledger.QueryExecutor) (ccprovider.ChaincodeDefinition, error) {
+func (fake *Lifecycle) ChaincodeDefinition(chaincodeName string, qe ledger.SimpleQueryExecutor) (ccprovider.ChaincodeDefinition, error) {
 	fake.chaincodeDefinitionMutex.Lock()
 	ret, specificReturn := fake.chaincodeDefinitionReturnsOnCall[len(fake.chaincodeDefinitionArgsForCall)]
 	fake.chaincodeDefinitionArgsForCall = append(fake.chaincodeDefinitionArgsForCall, struct {
 		chaincodeName string
-		txSim         ledger.QueryExecutor
-	}{chaincodeName, txSim})
-	fake.recordInvocation("ChaincodeDefinition", []interface{}{chaincodeName, txSim})
+		qe            ledger.SimpleQueryExecutor
+	}{chaincodeName, qe})
+	fake.recordInvocation("ChaincodeDefinition", []interface{}{chaincodeName, qe})
 	fake.chaincodeDefinitionMutex.Unlock()
 	if fake.ChaincodeDefinitionStub != nil {
-		return fake.ChaincodeDefinitionStub(chaincodeName, txSim)
+		return fake.ChaincodeDefinitionStub(chaincodeName, qe)
 	}
 	if specificReturn {
 		return ret.result1, ret.result2
@@ -65,10 +65,10 @@ func (fake *Lifecycle) ChaincodeDefinitionCallCount() int {
 	return len(fake.chaincodeDefinitionArgsForCall)
 }
 
-func (fake *Lifecycle) ChaincodeDefinitionArgsForCall(i int) (string, ledger.QueryExecutor) {
+func (fake *Lifecycle) ChaincodeDefinitionArgsForCall(i int) (string, ledger.SimpleQueryExecutor) {
 	fake.chaincodeDefinitionMutex.RLock()
 	defer fake.chaincodeDefinitionMutex.RUnlock()
-	return fake.chaincodeDefinitionArgsForCall[i].chaincodeName, fake.chaincodeDefinitionArgsForCall[i].txSim
+	return fake.chaincodeDefinitionArgsForCall[i].chaincodeName, fake.chaincodeDefinitionArgsForCall[i].qe
 }
 
 func (fake *Lifecycle) ChaincodeDefinitionReturns(result1 ccprovider.ChaincodeDefinition, result2 error) {
@@ -93,17 +93,17 @@ func (fake *Lifecycle) ChaincodeDefinitionReturnsOnCall(i int, result1 ccprovide
 	}{result1, result2}
 }
 
-func (fake *Lifecycle) ChaincodeContainerInfo(chainID string, chaincodeID string) (*ccprovider.ChaincodeContainerInfo, error) {
+func (fake *Lifecycle) ChaincodeContainerInfo(chaincodeName string, qe ledger.SimpleQueryExecutor) (*ccprovider.ChaincodeContainerInfo, error) {
 	fake.chaincodeContainerInfoMutex.Lock()
 	ret, specificReturn := fake.chaincodeContainerInfoReturnsOnCall[len(fake.chaincodeContainerInfoArgsForCall)]
 	fake.chaincodeContainerInfoArgsForCall = append(fake.chaincodeContainerInfoArgsForCall, struct {
-		chainID     string
-		chaincodeID string
-	}{chainID, chaincodeID})
-	fake.recordInvocation("ChaincodeContainerInfo", []interface{}{chainID, chaincodeID})
+		chaincodeName string
+		qe            ledger.SimpleQueryExecutor
+	}{chaincodeName, qe})
+	fake.recordInvocation("ChaincodeContainerInfo", []interface{}{chaincodeName, qe})
 	fake.chaincodeContainerInfoMutex.Unlock()
 	if fake.ChaincodeContainerInfoStub != nil {
-		return fake.ChaincodeContainerInfoStub(chainID, chaincodeID)
+		return fake.ChaincodeContainerInfoStub(chaincodeName, qe)
 	}
 	if specificReturn {
 		return ret.result1, ret.result2
@@ -117,10 +117,10 @@ func (fake *Lifecycle) ChaincodeContainerInfoCallCount() int {
 	return len(fake.chaincodeContainerInfoArgsForCall)
 }
 
-func (fake *Lifecycle) ChaincodeContainerInfoArgsForCall(i int) (string, string) {
+func (fake *Lifecycle) ChaincodeContainerInfoArgsForCall(i int) (string, ledger.SimpleQueryExecutor) {
 	fake.chaincodeContainerInfoMutex.RLock()
 	defer fake.chaincodeContainerInfoMutex.RUnlock()
-	return fake.chaincodeContainerInfoArgsForCall[i].chainID, fake.chaincodeContainerInfoArgsForCall[i].chaincodeID
+	return fake.chaincodeContainerInfoArgsForCall[i].chaincodeName, fake.chaincodeContainerInfoArgsForCall[i].qe
 }
 
 func (fake *Lifecycle) ChaincodeContainerInfoReturns(result1 *ccprovider.ChaincodeContainerInfo, result2 error) {

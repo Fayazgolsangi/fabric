@@ -13,16 +13,15 @@ import (
 )
 
 type Core struct {
-	Logging   *Logging   `yaml:"logging,omitempty"`
-	Peer      *Peer      `yaml:"peer,omitempty"`
-	VM        *VM        `yaml:"vm,omitempty"`
-	Chaincode *Chaincode `yaml:"chaincode,omitempty"`
-	Ledger    *Ledger    `yaml:"ledger,omitempty"`
-	Metrics   *Metrics   `yaml:"metrics,omitempty"`
+	Logging    *Logging    `yaml:"logging,omitempty"`
+	Peer       *Peer       `yaml:"peer,omitempty"`
+	VM         *VM         `yaml:"vm,omitempty"`
+	Chaincode  *Chaincode  `yaml:"chaincode,omitempty"`
+	Ledger     *Ledger     `yaml:"ledger,omitempty"`
+	Operations *Operations `yaml:"operations,omitempty"`
 }
 
 type Logging struct {
-	Level  string `yaml:"level,omitempty"`
 	Format string `yaml:"format,omitempty"`
 
 	ExtraProperties map[string]interface{} `yaml:",inline,omitempty"`
@@ -231,11 +230,12 @@ type Node struct {
 }
 
 type SystemFlags struct {
-	CSCC string `yaml:"cscc,omitempty"`
-	LSCC string `yaml:"lscc,omitempty"`
-	ESCC string `yaml:"escc,omitempty"`
-	VSCC string `yaml:"vscc,omitempty"`
-	QSCC string `yaml:"qscc,omitempty"`
+	NEWLIFECYCLE string `yaml:"_lifecycle,omitempty"`
+	CSCC         string `yaml:"cscc,omitempty"`
+	LSCC         string `yaml:"lscc,omitempty"`
+	ESCC         string `yaml:"escc,omitempty"`
+	VSCC         string `yaml:"vscc,omitempty"`
+	QSCC         string `yaml:"qscc,omitempty"`
 }
 
 type Ledger struct {
@@ -265,16 +265,19 @@ type HistoryConfig struct {
 	EnableHistoryDatabase bool `yaml:"enableHistoryDatabase"`
 }
 
-type Metrics struct {
-	Enabled        bool            `yaml:"enabled"`
-	Reporter       string          `yaml:"reporter,omitempty"`
-	Interval       time.Duration   `yaml:"interval,omitempty"`
-	StatsdReporter *StatsdReporter `yaml:"statsdReporter,omitempty"`
-	PromReporter   *Service        `yaml:"promReporter,omitempty"`
+type Operations struct {
+	ListenAddress string `yaml:"listenAddress,omitempty"`
+	TLS           *TLS   `yaml:"tls"`
 }
 
-type StatsdReporter struct {
+type Metrics struct {
+	Provider string  `yaml:"provider"`
+	Statsd   *Statsd `yaml:"statsd,omitempty"`
+}
+
+type Statsd struct {
+	Network       string        `yaml:"network,omitempty"`
 	Address       string        `yaml:"address,omitempty"`
-	FlushInterval time.Duration `yaml:"flushInterval,omitempty"`
-	FlushBytes    int           `yaml:"flushBytes,omitempty"`
+	WriteInterval time.Duration `yaml:"writeInterval,omitempty"`
+	Prefix        string        `yaml:"prefix,omitempty"`
 }

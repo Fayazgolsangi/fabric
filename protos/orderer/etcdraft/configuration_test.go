@@ -11,9 +11,8 @@ import (
 	"io/ioutil"
 	"testing"
 
-	"github.com/hyperledger/fabric/protos/orderer/etcdraft"
-
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric/protos/orderer/etcdraft"
 	"github.com/stretchr/testify/require"
 )
 
@@ -42,6 +41,9 @@ func TestMarshal(t *testing.T) {
 	}
 	packed, err := etcdraft.Marshal(md)
 	require.Nil(t, err, "marshalling should succeed")
+
+	packed, err = etcdraft.Marshal(md)
+	require.Nil(t, err, "marshalling should succeed a second time because we did not mutate ourselves")
 
 	unpacked := &etcdraft.Metadata{}
 	require.Nil(t, proto.Unmarshal(packed, unpacked), "unmarshalling should succeed")

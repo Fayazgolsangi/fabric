@@ -13,9 +13,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric/common/chaincode"
 	"github.com/hyperledger/fabric/common/flogging"
+	"github.com/hyperledger/fabric/core/common/privdata"
 	"github.com/hyperledger/fabric/core/ledger"
 	pb "github.com/hyperledger/fabric/protos/peer"
 	"github.com/pkg/errors"
@@ -80,6 +83,16 @@ func SetChaincodesPath(path string) {
 
 func GetChaincodePackage(ccname string, ccversion string) ([]byte, error) {
 	return GetChaincodePackageFromPath(ccname, ccversion, chaincodeInstallPath)
+}
+
+// isPrintable is used by CDSPackage and SignedCDSPackage validation to
+// detect garbage strings in unmarshaled proto fields where printable
+// characters are expected.
+func isPrintable(name string) bool {
+	notASCII := func(r rune) bool {
+		return !unicode.IsPrint(r)
+	}
+	return strings.IndexFunc(name, notASCII) == -1
 }
 
 // GetChaincodePackage returns the chaincode package from the file system
@@ -161,6 +174,55 @@ func (*CCInfoFSImpl) PutChaincode(depSpec *pb.ChaincodeDeploymentSpec) (CCPackag
 	}
 
 	return cccdspack, nil
+}
+
+// DirEnumerator enumerates directories
+type DirEnumerator func(string) ([]os.FileInfo, error)
+
+// ChaincodeExtractor extracts chaincode from a given path
+type ChaincodeExtractor func(ccname string, ccversion string, path string) (CCPackage, error)
+
+// ListInstalledChaincodes retrieves the installed chaincodes
+func (cifs *CCInfoFSImpl) ListInstalledChaincodes(dir string, ls DirEnumerator, ccFromPath ChaincodeExtractor) ([]chaincode.InstalledChaincode, error) {
+	var chaincodes []chaincode.InstalledChaincode
+	if _, err := os.Stat(dir); err != nil && os.IsNotExist(err) {
+		return nil, nil
+	}
+	files, err := ls(dir)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed reading directory %s", dir)
+	}
+
+	for _, f := range files {
+		// Skip directories, we're only interested in normal files
+		if f.IsDir() {
+			continue
+		}
+		// A chaincode file name is of the type "name.version"
+		// We're only interested in the name.
+		// Skip files that don't adhere to the file naming convention of "A.B"
+		i := strings.Index(f.Name(), ".")
+		if i == -1 {
+			ccproviderLogger.Info("Skipping", f.Name(), "because of missing separator '.'")
+			continue
+		}
+		ccName := f.Name()[:i]      // Everything before the separator
+		ccVersion := f.Name()[i+1:] // Everything after the separator
+
+		ccPackage, err := ccFromPath(ccName, ccVersion, dir)
+		if err != nil {
+			ccproviderLogger.Warning("Failed obtaining chaincode information about", ccName, ccVersion, ":", err)
+			return nil, errors.Wrapf(err, "failed obtaining information about %s, version %s", ccName, ccVersion)
+		}
+
+		chaincodes = append(chaincodes, chaincode.InstalledChaincode{
+			Name:    ccName,
+			Version: ccVersion,
+			Id:      ccPackage.GetId(),
+		})
+	}
+	ccproviderLogger.Debug("Returning", chaincodes)
+	return chaincodes, nil
 }
 
 // ccInfoFSStorageMgr is the storage manager used either by the cache or if the
@@ -256,7 +318,7 @@ func GetCCPackage(buf []byte) (CCPackage, error) {
 		return scds, nil
 	}
 
-	return nil, errors.New("could not unmarshaled chaincode package to CDS or SignedCDS")
+	return nil, errors.New("could not unmarshal chaincode package to CDS or SignedCDS")
 }
 
 // GetInstalledChaincodes returns a map whose key is the chaincode id and
@@ -284,8 +346,7 @@ func GetInstalledChaincodes() (*pb.ChaincodeQueryResponse, error) {
 			ccpack, err := GetChaincodeFromFS(ccname, ccversion)
 			if err != nil {
 				// either chaincode on filesystem has been tampered with or
-				// a non-chaincode file has been found in the chaincodes directory
-				ccproviderLogger.Errorf("Unreadable chaincode file found on filesystem: %s", file.Name())
+				// _lifecycle chaincode files exist in the chaincodes directory.
 				continue
 			}
 
@@ -429,11 +490,10 @@ func (*ChaincodeData) ProtoMessage() {}
 
 // ChaincodeContainerInfo is yet another synonym for the data required to start/stop a chaincode.
 type ChaincodeContainerInfo struct {
-	Name        string
-	Version     string
-	Path        string
-	Type        string
-	CodePackage []byte
+	Name    string
+	Version string
+	Path    string
+	Type    string
 
 	// ContainerType is not a great name, but 'DOCKER' and 'SYSTEM' are the valid types
 	ContainerType string
@@ -448,6 +508,8 @@ type TransactionParams struct {
 	Proposal             *pb.Proposal
 	TXSimulator          ledger.TxSimulator
 	HistoryQueryExecutor ledger.HistoryQueryExecutor
+	CollectionStore      privdata.CollectionStore
+	IsInitTransaction    bool
 
 	// this is additional data passed to the chaincode
 	ProposalDecorations map[string][]byte

@@ -86,6 +86,12 @@ type Orderer interface {
 	// ConsensusMetadata returns the metadata associated with the consensus type.
 	ConsensusMetadata() []byte
 
+	// ConsensusMigrationState returns the consensus-type migration state.
+	ConsensusMigrationState() ab.ConsensusType_MigrationState
+
+	// ConsensusMigrationContext returns the consensus-type migration context.
+	ConsensusMigrationContext() uint64
+
 	// BatchSize returns the maximum number of messages to include in a block
 	BatchSize() *ab.BatchSize
 
@@ -146,6 +152,18 @@ type ApplicationCapabilities interface {
 	// of transactions (as introduced in v1.2).
 	V1_2Validation() bool
 
+	// V1_3Validation returns true if this channel supports transaction validation
+	// as introduced in v1.3. This includes:
+	//  - policies expressible at a ledger key granularity, as described in FAB-8812
+	//  - new chaincode lifecycle, as described in FAB-11237
+	V1_3Validation() bool
+
+	// V2_0Validation returns true if this channel supports transaction validation
+	// as introduced in v2.0. This includes:
+	//  - new chaincode lifecycle
+	//  - implicit per-org collections
+	V2_0Validation() bool
+
 	// MetadataLifecycle indicates whether the peer should use the deprecated and problematic
 	// v1.0/v1.1 lifecycle, or whether it should use the newer per channel peer local chaincode
 	// metadata package approach planned for release with Fabric v1.2
@@ -154,6 +172,9 @@ type ApplicationCapabilities interface {
 	// KeyLevelEndorsement returns true if this channel supports endorsement
 	// policies expressible at a ledger key granularity, as described in FAB-8812
 	KeyLevelEndorsement() bool
+
+	// FabToken returns true if this channel supports FabToken functions
+	FabToken() bool
 }
 
 // OrdererCapabilities defines the capabilities for the orderer portion of a channel
@@ -172,6 +193,14 @@ type OrdererCapabilities interface {
 	// ExpirationCheck specifies whether the orderer checks for identity expiration checks
 	// when validating messages
 	ExpirationCheck() bool
+
+	// Kafka2RaftMigration checks whether the orderer permits a Kafka to Raft migration.
+	Kafka2RaftMigration() bool
+
+	// UseChannelCreationPolicyAsAdmins checks whether the orderer should use more sophisticated
+	// channel creation logic using channel creation policy as the Admins policy if
+	// the creation transaction appears to support it.
+	UseChannelCreationPolicyAsAdmins() bool
 }
 
 // PolicyMapper is an interface for

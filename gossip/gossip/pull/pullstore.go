@@ -16,8 +16,8 @@ import (
 	"github.com/hyperledger/fabric/gossip/gossip/algo"
 	"github.com/hyperledger/fabric/gossip/util"
 	proto "github.com/hyperledger/fabric/protos/gossip"
-	"github.com/op/go-logging"
 	"github.com/pkg/errors"
+	"go.uber.org/zap/zapcore"
 )
 
 // Constants go here.
@@ -54,6 +54,7 @@ type Config struct {
 	PeerCountToSelect int // Number of peers to initiate pull with
 	Tag               proto.GossipMessage_Tag
 	MsgType           proto.PullMsgType
+	PullEngineConfig  algo.PullEngineConfig
 }
 
 // IngressDigestFilter filters out entities in digests that are received from remote peers
@@ -113,7 +114,7 @@ type pullMediatorImpl struct {
 	*PullAdapter
 	msgType2Hook map[MsgType][]MessageHook
 	config       Config
-	logger       *logging.Logger
+	logger       util.Logger
 	itemID2Msg   map[string]*proto.SignedGossipMessage
 	engine       *algo.PullEngine
 }
@@ -136,11 +137,11 @@ func NewPullMediator(config Config, adapter *PullAdapter) Mediator {
 		PullAdapter:  adapter,
 		msgType2Hook: make(map[MsgType][]MessageHook),
 		config:       config,
-		logger:       util.GetLogger(util.LoggingPullModule, config.ID),
+		logger:       util.GetLogger(util.PullLogger, config.ID),
 		itemID2Msg:   make(map[string]*proto.SignedGossipMessage),
 	}
 
-	p.engine = algo.NewPullEngineWithFilter(p, config.PullInterval, egressDigFilter.byContext())
+	p.engine = algo.NewPullEngineWithFilter(p, config.PullInterval, egressDigFilter.byContext(), config.PullEngineConfig)
 
 	if adapter.IngressDigFilter == nil {
 		// Create accept all filter
@@ -171,19 +172,16 @@ func (p *pullMediatorImpl) HandleMessage(m proto.ReceivedMessage) {
 	if helloMsg := msg.GetHello(); helloMsg != nil {
 		pullMsgType = HelloMsgType
 		p.engine.OnHello(helloMsg.Nonce, m)
-	}
-	if digest := msg.GetDataDig(); digest != nil {
+	} else if digest := msg.GetDataDig(); digest != nil {
 		d := p.PullAdapter.IngressDigFilter(digest)
 		itemIDs = util.BytesToStrings(d.Digests)
 		pullMsgType = DigestMsgType
 		p.engine.OnDigest(itemIDs, d.Nonce, m)
-	}
-	if req := msg.GetDataReq(); req != nil {
+	} else if req := msg.GetDataReq(); req != nil {
 		itemIDs = util.BytesToStrings(req.Digests)
 		pullMsgType = RequestMsgType
 		p.engine.OnReq(itemIDs, req.Nonce, m)
-	}
-	if res := msg.GetDataUpdate(); res != nil {
+	} else if res := msg.GetDataUpdate(); res != nil {
 		itemIDs = make([]string, len(res.Data))
 		items = make([]*proto.SignedGossipMessage, len(res.Data))
 		pullMsgType = ResponseMsgType
@@ -290,7 +288,7 @@ func (p *pullMediatorImpl) SendDigest(digest []string, nonce uint64, context int
 		},
 	}
 	remotePeer := context.(proto.ReceivedMessage).GetConnectionInfo()
-	if p.logger.IsEnabledFor(logging.DEBUG) {
+	if p.logger.IsEnabledFor(zapcore.DebugLevel) {
 		p.logger.Debug("Sending", p.config.MsgType, "digest:", digMsg.GetDataDig().FormattedDigests(), "to", remotePeer)
 	}
 
@@ -312,7 +310,7 @@ func (p *pullMediatorImpl) SendReq(dest string, items []string, nonce uint64) {
 			},
 		},
 	}
-	if p.logger.IsEnabledFor(logging.DEBUG) {
+	if p.logger.IsEnabledFor(zapcore.DebugLevel) {
 		p.logger.Debug("Sending", req.GetDataReq().FormattedDigests(), "to", dest)
 	}
 	sMsg, err := req.NoopSign()

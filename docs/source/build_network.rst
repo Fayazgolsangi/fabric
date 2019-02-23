@@ -62,7 +62,7 @@ Here's the help text for the ``byfn.sh`` script:
       -d <delay> - delay duration in seconds (defaults to 3)
       -f <docker-compose-file> - specify which docker-compose file use (defaults to docker-compose-cli.yaml)
       -s <dbtype> - the database backend to use: goleveldb (default) or couchdb
-      -l <language> - the chaincode language: golang (default) or node
+      -l <language> - the chaincode language: golang (default), node or java
       -i <imagetag> - the tag to be used to launch the network (defaults to "latest")
       -v - verbose mode
     byfn.sh -h (print this message)
@@ -102,7 +102,7 @@ prompt. Respond with a ``y`` or hit the return key to execute the described acti
 
 .. code:: bash
 
-  Generating certs and genesis block for with channel 'mychannel' and CLI timeout of '10'
+  Generating certs and genesis block for channel 'mychannel' with CLI timeout of '10' seconds and CLI delay of '3' seconds
   Continue? [Y/n] y
   proceeding ...
   /Users/xxx/dev/fabric-samples/bin/cryptogen
@@ -161,7 +161,8 @@ Next, you can bring the network up with one of the following commands:
 
 The above command will compile Golang chaincode images and spin up the corresponding
 containers.  Go is the default chaincode language, however there is also support
-for `Node.js <https://fabric-shim.github.io/>`__ chaincode.  If you'd like to run through this tutorial with node
+for `Node.js <https://fabric-shim.github.io/>`_ and `Java <https://fabric-chaincode-java.github.io/>`_
+chaincode.  If you'd like to run through this tutorial with node
 chaincode, pass the following command instead:
 
 .. code:: bash
@@ -171,15 +172,28 @@ chaincode, pass the following command instead:
 
   ./byfn.sh up -l node
 
-.. note:: View the `Hyperledger Fabric Shim <https://fabric-shim.github.io/ChaincodeStub.html>`__
-          documentation for more info on the node.js chaincode shim APIs.
+.. note:: For more information on the Node.js shim, please refer to its
+          `documentation <https://fabric-shim.github.io/ChaincodeInterface.html>`_.
+
+
+.. note:: For more information on the Java shim, please refer to its
+          `documentation <https://fabric-chaincode-java.github.io/org/hyperledger/fabric/shim/Chaincode.html>`_.
+
+Тo make the sample run with Java chaincode, you have to specify ``-l java`` as follows:
+
+.. code:: bash
+
+  ./byfn.sh up -l java
+
+.. note:: Do not run both of these commands. Only one language can be tried unless
+          you bring down and recreate the network between.
 
 Once again, you will be prompted as to whether you wish to continue or abort.
 Respond with a ``y`` or hit the return key:
 
 .. code:: bash
 
-  Starting with channel 'mychannel' and CLI timeout of '10'
+  Starting for channel 'mychannel' with CLI timeout of '10' seconds and CLI delay of '3' seconds
   Continue? [Y/n]
   proceeding ...
   Creating network "net_byfn" with the default driver
@@ -254,7 +268,7 @@ If you'd like to learn more about the underlying tooling and bootstrap mechanics
 continue reading.  In these next sections we'll walk through the various steps
 and requirements to build a fully-functional Hyperledger Fabric network.
 
-.. note:: The manual steps outlined below assume that the ``CORE_LOGGING_LEVEL`` in
+.. note:: The manual steps outlined below assume that the ``FABRIC_LOGGING_SPEC`` in
           the ``cli`` container is set to ``DEBUG``. You can set this by modifying
           the ``docker-compose-cli.yaml`` file in the ``first-network`` directory.
           e.g.
@@ -269,8 +283,8 @@ and requirements to build a fully-functional Hyperledger Fabric network.
               environment:
                 - GOPATH=/opt/gopath
                 - CORE_VM_ENDPOINT=unix:///host/var/run/docker.sock
-                - CORE_LOGGING_LEVEL=DEBUG
-                #- CORE_LOGGING_LEVEL=INFO
+                - FABRIC_LOGGING_SPEC=DEBUG
+                #- FABRIC_LOGGING_SPEC=INFO
 
 Crypto Generator
 ----------------
@@ -348,7 +362,7 @@ saved to a folder titled ``crypto-config``.
 Configuration Transaction Generator
 -----------------------------------
 
-The ``configtxgen tool`` is used to create four configuration artifacts:
+The ``configtxgen`` tool is used to create four configuration artifacts:
 
   * orderer ``genesis block``,
   * channel ``configuration transaction``,
@@ -434,7 +448,7 @@ Then, we'll invoke the ``configtxgen`` tool to create the orderer genesis block:
 
 .. code:: bash
 
-    ../bin/configtxgen -profile TwoOrgsOrdererGenesis -outputBlock ./channel-artifacts/genesis.block
+    ../bin/configtxgen -profile TwoOrgsOrdererGenesis -channelID byfn-sys-channel -outputBlock ./channel-artifacts/genesis.block
 
 You should see an output similar to the following in your terminal:
 
@@ -446,7 +460,7 @@ You should see an output similar to the following in your terminal:
 
 .. note:: The orderer genesis block and the subsequent artifacts we are about to create
           will be output into the ``channel-artifacts`` directory at the root of this
-          project.
+          project. The `channelID` in the above command is the name of the system channel.
 
 .. _createchanneltx:
 
@@ -666,8 +680,9 @@ Applications interact with the blockchain ledger through ``chaincode``.  As
 such we need to install the chaincode on every peer that will execute and
 endorse our transactions, and then instantiate the chaincode on the channel.
 
-First, install the sample Go or Node.js chaincode onto one of the four peer nodes.  These commands
-place the specified source code flavor onto our peer's filesystem.
+First, install the sample Go, Node.js or Java chaincode onto the peer0
+node in Org1. These commands place the specified source
+code flavor onto our peer's filesystem.
 
 .. note:: You can only install one version of the source code per chaincode name
           and version.  The source code exists on the peer's file system in the
@@ -679,16 +694,70 @@ place the specified source code flavor onto our peer's filesystem.
 
 .. code:: bash
 
-    # this installs the Go chaincode
-    peer chaincode install -n mycc -v 1.0 -p github.com/chaincode/chaincode_example02/go/
+    # this installs the Go chaincode. For go chaincode -p takes the relative path from $GOPATH/src
+    peer chaincode install -n mycc -v 1.0 -p github.com/hyperledger/fabric-samples/chaincode/abstore/go/
 
 **Node.js**
 
 .. code:: bash
 
     # this installs the Node.js chaincode
-    # make note of the -l flag; we use this to specify the language
-    peer chaincode install -n mycc -v 1.0 -l node -p /opt/gopath/src/github.com/chaincode/chaincode_example02/node/
+    # make note of the -l flag to indicate "node" chaincode
+    # for node chaincode -p takes the absolute path to the node.js chaincode
+    peer chaincode install -n mycc -v 1.0 -l node -p /opt/gopath/src/github.com/hyperledger/fabric-samples/chaincode/abstore/node/
+
+**Java**
+
+.. code:: bash
+
+    # make note of the -l flag to indicate "java" chaincode
+    # for java chaincode -p takes the absolute path to the java chaincode
+    peer chaincode install -n mycc -v 1.0 -l java -p /opt/gopath/src/github.com/hyperledger/fabric-samples/chaincode/abstore/java/
+
+When we instantiate the chaincode on the channel, the endorsement policy will be
+set to require endorsements from a peer in both Org1 and Org2. Therefore, we
+also need to install the chaincode on a peer in Org2.
+
+Modify the following four environment variables to issue the install command
+against peer0 in Org2:
+
+.. code:: bash
+
+   # Environment variables for PEER0 in Org2
+
+   CORE_PEER_MSPCONFIGPATH=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/org2.example.com/users/Admin@org2.example.com/msp
+   CORE_PEER_ADDRESS=peer0.org2.example.com:7051
+   CORE_PEER_LOCALMSPID="Org2MSP"
+   CORE_PEER_TLS_ROOTCERT_FILE=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/org2.example.com/peers/peer0.org2.example.com/tls/ca.crt
+
+Now install the sample Go, Node.js or Java chaincode onto a peer0
+in Org2. These commands place the specified source
+code flavor onto our peer's filesystem.
+
+**Golang**
+
+.. code:: bash
+
+    # this installs the Go chaincode. For go chaincode -p takes the relative path from $GOPATH/src
+    peer chaincode install -n mycc -v 1.0 -p github.com/hyperledger/fabric-samples/chaincode/abstore/go/
+
+**Node.js**
+
+.. code:: bash
+
+    # this installs the Node.js chaincode
+    # make note of the -l flag to indicate "node" chaincode
+    # for node chaincode -p takes the absolute path to the node.js chaincode
+    peer chaincode install -n mycc -v 1.0 -l node -p /opt/gopath/src/github.com/hyperledger/fabric-samples/chaincode/abstore/node/
+
+**Java**
+
+.. code:: bash
+
+    # make note of the -l flag to indicate "java" chaincode
+    # for java chaincode -p takes the absolute path to the java chaincode
+    peer chaincode install -n mycc -v 1.0 -l java -p /opt/gopath/src/github.com/hyperledger/fabric-samples/chaincode/abstore/java/
+
 
 Next, instantiate the chaincode on the channel. This will initialize the
 chaincode on the channel, set the endorsement policy for the chaincode, and
@@ -723,6 +792,15 @@ If we changed the syntax to ``OR`` then we would need only one endorsement.
     # notice that we must pass the -l flag after the chaincode name to identify the language
 
     peer chaincode instantiate -o orderer.example.com:7050 --tls --cafile /opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/ordererOrganizations/example.com/orderers/orderer.example.com/msp/tlscacerts/tlsca.example.com-cert.pem -C $CHANNEL_NAME -n mycc -l node -v 1.0 -c '{"Args":["init","a", "100", "b","200"]}' -P "AND ('Org1MSP.peer','Org2MSP.peer')"
+
+**Java**
+
+.. note:: Please note, Java chaincode instantiation might take time as it compiles chaincode and
+          downloads docker container with java environment.
+
+.. code:: bash
+
+    peer chaincode instantiate -o orderer.example.com:7050 --tls --cafile /opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/ordererOrganizations/example.com/orderers/orderer.example.com/msp/tlscacerts/tlsca.example.com-cert.pem -C $CHANNEL_NAME -n mycc -l java -v 1.0 -c '{"Args":["init","a", "100", "b","200"]}' -P "AND ('Org1MSP.peer','Org2MSP.peer')"
 
 See the `endorsement
 policies <http://hyperledger-fabric.readthedocs.io/en/latest/endorsement-policies.html>`__
@@ -767,7 +845,7 @@ Query
 
 Let's confirm that our previous invocation executed properly. We initialized the
 key ``a`` with a value of ``100`` and just removed ``10`` with our previous
-invocation. Therefore, a query against ``a`` should reveal ``90``. The syntax
+invocation. Therefore, a query against ``a`` should return ``90``. The syntax
 for query is as follows.
 
 .. code:: bash
@@ -784,6 +862,83 @@ We should see the following:
 
 Feel free to start over and manipulate the key value pairs and subsequent
 invocations.
+
+Install
+^^^^^^^
+
+Now we will install the chaincode on a third peer, peer1 in Org2. Modify the
+following four environment variables to issue the install command
+against peer1 in Org2:
+
+.. code:: bash
+
+   # Environment variables for PEER1 in Org2
+
+   CORE_PEER_MSPCONFIGPATH=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/org2.example.com/users/Admin@org2.example.com/msp
+   CORE_PEER_ADDRESS=peer1.org2.example.com:7051
+   CORE_PEER_LOCALMSPID="Org2MSP"
+   CORE_PEER_TLS_ROOTCERT_FILE=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/org2.example.com/peers/peer1.org2.example.com/tls/ca.crt
+
+Now install the sample Go, Node.js or Java chaincode onto peer1
+in Org2. These commands place the specified source
+code flavor onto our peer's filesystem.
+
+**Golang**
+
+.. code:: bash
+
+    # this installs the Go chaincode. For go chaincode -p takes the relative path from $GOPATH/src
+    peer chaincode install -n mycc -v 1.0 -p github.com/hyperledger/fabric-samples/chaincode/abstore/go/
+
+**Node.js**
+
+.. code:: bash
+
+    # this installs the Node.js chaincode
+    # make note of the -l flag to indicate "node" chaincode
+    # for node chaincode -p takes the absolute path to the node.js chaincode
+    peer chaincode install -n mycc -v 1.0 -l node -p /opt/gopath/src/github.com/hyperledger/fabric-samples/chaincode/abstore/node/
+
+**Java**
+
+.. code:: bash
+
+    # make note of the -l flag to indicate "java" chaincode
+    # for java chaincode -p takes the absolute path to the java chaincode
+    peer chaincode install -n mycc -v 1.0 -l java -p /opt/gopath/src/github.com/hyperledger/fabric-samples/chaincode/abstore/java/
+
+Query
+^^^^^
+
+Let's confirm that we can issue the query to Peer1 in Org2. We initialized the
+key ``a`` with a value of ``100`` and just removed ``10`` with our previous
+invocation. Therefore, a query against ``a`` should still return ``90``. 
+
+peer1 in Org2 must first join the channel before it can respond to queries. The
+channel can be joined by issuing the following command:
+
+.. code:: bash
+
+  CORE_PEER_MSPCONFIGPATH=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/org2.example.com/users/Admin@org2.example.com/msp CORE_PEER_ADDRESS=peer1.org2.example.com:7051 CORE_PEER_LOCALMSPID="Org2MSP" CORE_PEER_TLS_ROOTCERT_FILE=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/org2.example.com/peers/peer1.org2.example.com/tls/ca.crt peer channel join -b mychannel.block
+
+After the join command returns, the query can be issued. The syntax
+for query is as follows.
+
+.. code:: bash
+
+  # be sure to set the -C and -n flags appropriately
+
+  peer chaincode query -C $CHANNEL_NAME -n mycc -c '{"Args":["query","a"]}'
+
+We should see the following:
+
+.. code:: bash
+
+   Query Result: 90
+
+Feel free to start over and manipulate the key value pairs and subsequent
+invocations.
+
 
 .. _behind-scenes:
 
@@ -822,10 +977,10 @@ What's happening behind the scenes?
    the ``Org1MSPanchors.tx`` and ``Org2MSPanchors.tx`` artifacts to the ordering
    service along with the name of our channel.
 
--  A chaincode - **chaincode_example02** - is installed on ``peer0.org1.example.com`` and
+-  A chaincode - **abstore** - is installed on ``peer0.org1.example.com`` and
    ``peer0.org2.example.com``
 
--  The chaincode is then "instantiated" on ``peer0.org2.example.com``. Instantiation
+-  The chaincode is then "instantiated" on ``mychannel``. Instantiation
    adds the chaincode to the channel, starts the container for the target peer,
    and initializes the key value pairs associated with the chaincode.  The initial
    values for this example are ["a","100" "b","200"]. This "instantiation" results
@@ -836,15 +991,20 @@ What's happening behind the scenes?
    ``-P "AND ('Org1MSP.peer','Org2MSP.peer')"``, meaning that any
    transaction must be endorsed by a peer tied to Org1 and Org2.
 
--  A query against the value of "a" is issued to ``peer0.org1.example.com``. The
-   chaincode was previously installed on ``peer0.org1.example.com``, so this will start
-   a container for Org1 peer0 by the name of ``dev-peer0.org1.example.com-mycc-1.0``. The result
-   of the query is also returned. No write operations have occurred, so
+-  A query against the value of "a" is issued to ``peer0.org2.example.com``.
+   A container for Org2 peer0 by the name of ``dev-peer0.org2.example.com-mycc-1.0``
+   was started when the chaincode was instantiated. The result
+   of the query is returned. No write operations have occurred, so
    a query against "a" will still return a value of "100".
 
--  An invoke is sent to ``peer0.org1.example.com`` to move "10" from "a" to "b"
+-  An invoke is sent to ``peer0.org1.example.com`` and ``peer0.org2.example.com``
+   to move "10" from "a" to "b"
 
--  The chaincode is then installed on ``peer1.org2.example.com``
+-  A query is sent to ``peer0.org2.example.com`` for the value of "a". A
+   value of 90 is returned, correctly reflecting the previous
+   transaction during which the value for key "a" was modified by 10.
+
+-  The chaincode - **abstore** - is installed on ``peer1.org2.example.com``
 
 -  A query is sent to ``peer1.org2.example.com`` for the value of "a". This starts a
    third chaincode container by the name of ``dev-peer1.org2.example.com-mycc-1.0``. A
@@ -972,7 +1132,7 @@ the network pass ``docker-compose-couch.yaml`` as well:
 
     docker-compose -f docker-compose-cli.yaml -f docker-compose-couch.yaml up -d
 
-**chaincode_example02** should now work using CouchDB underneath.
+**abstore** should now work using CouchDB underneath.
 
 .. note::  If you choose to implement mapping of the fabric-couchdb container
            port to a host port, please make sure you are aware of the security
@@ -982,7 +1142,7 @@ the network pass ``docker-compose-couch.yaml`` as well:
            Production environments would likely refrain from implementing port mapping in
            order to restrict outside access to the CouchDB containers.
 
-You can use **chaincode_example02** chaincode against the CouchDB state database
+You can use **abstore** chaincode against the CouchDB state database
 using the steps outlined above, however in order to exercise the CouchDB query
 capabilities you will need to use a chaincode that has data modeled as JSON,
 (e.g. **marbles02**). You can locate the **marbles02** chaincode in the
@@ -998,7 +1158,7 @@ channel, use the following steps to interact with the **marbles02** chaincode:
 
        # be sure to modify the $CHANNEL_NAME variable accordingly for the instantiate command
 
-       peer chaincode install -n marbles -v 1.0 -p github.com/chaincode/marbles02/go
+       peer chaincode install -n marbles -v 1.0 -p github.com/hyperledger/fabric-samples/chaincode/marbles02/go
        peer chaincode instantiate -o orderer.example.com:7050 --tls --cafile /opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/ordererOrganizations/example.com/orderers/orderer.example.com/msp/tlscacerts/tlsca.example.com-cert.pem -C $CHANNEL_NAME -n marbles -v 1.0 -c '{"Args":["init"]}' -P "OR ('Org0MSP.peer','Org1MSP.peer')"
 
 -  Create some marbles and move them around:

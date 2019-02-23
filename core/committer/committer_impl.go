@@ -11,20 +11,15 @@ import (
 	"github.com/hyperledger/fabric/core/ledger"
 	"github.com/hyperledger/fabric/protos/common"
 	"github.com/hyperledger/fabric/protos/utils"
-	"github.com/op/go-logging"
 	"github.com/pkg/errors"
 )
+
+var logger = flogging.MustGetLogger("committer")
 
 //--------!!!IMPORTANT!!-!!IMPORTANT!!-!!IMPORTANT!!---------
 // This is used merely to complete the loop for the "skeleton"
 // path so we can reason about and  modify committer component
 // more effectively using code.
-
-var logger *logging.Logger // package-level logger
-
-func init() {
-	logger = flogging.MustGetLogger("committer")
-}
 
 // PeerLedgerSupport abstract out the API's of ledger.PeerLedger interface
 // required to implement LedgerCommitter
@@ -35,11 +30,15 @@ type PeerLedgerSupport interface {
 
 	CommitWithPvtData(blockAndPvtdata *ledger.BlockAndPvtData) error
 
+	CommitPvtDataOfOldBlocks(blockPvtData []*ledger.BlockPvtData) ([]*ledger.PvtdataHashMismatch, error)
+
 	GetBlockchainInfo() (*common.BlockchainInfo, error)
 
 	GetBlockByNumber(blockNumber uint64) (*common.Block, error)
 
 	GetConfigHistoryRetriever() (ledger.ConfigHistoryRetriever, error)
+
+	GetMissingPvtDataTracker() (ledger.MissingPvtDataTracker, error)
 
 	Close()
 }

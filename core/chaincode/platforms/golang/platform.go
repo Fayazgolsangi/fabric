@@ -19,8 +19,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/hyperledger/fabric/common/metadata"
-	"github.com/hyperledger/fabric/core/chaincode/platforms"
 	"github.com/hyperledger/fabric/core/chaincode/platforms/ccmetadata"
 	"github.com/hyperledger/fabric/core/chaincode/platforms/util"
 	cutil "github.com/hyperledger/fabric/core/container/util"
@@ -138,7 +136,7 @@ func (goPlatform *Platform) ValidateCodePackage(code []byte) error {
 	// the container itself needs to be the last line of defense and be configured to be
 	// resilient in enforcing constraints. However, we should still do our best to keep as much
 	// garbage out of the system as possible.
-	re := regexp.MustCompile(`(/)?src/.*`)
+	re := regexp.MustCompile(`^(/)?(src|META-INF)/.*`)
 	is := bytes.NewReader(code)
 	gr, err := gzip.NewReader(is)
 	if err != nil {
@@ -508,17 +506,10 @@ func (goPlatform *Platform) GenerateDockerBuild(path string, code []byte, tw *ta
 	ldflagsOpt := getLDFlagsOpts()
 	logger.Infof("building chaincode with ldflagsOpt: '%s'", ldflagsOpt)
 
-	var gotags string
-	// check if experimental features are enabled
-	if metadata.Experimental == "true" {
-		gotags = " experimental"
-	}
-	logger.Infof("building chaincode with tags: %s", gotags)
-
 	codepackage := bytes.NewReader(code)
 	binpackage := bytes.NewBuffer(nil)
 	err = util.DockerBuild(util.DockerBuildOptions{
-		Cmd:          fmt.Sprintf("GOPATH=/chaincode/input:$GOPATH go build -tags \"%s\" %s -o /chaincode/output/chaincode %s", gotags, ldflagsOpt, pkgname),
+		Cmd:          fmt.Sprintf("GOPATH=/chaincode/input:$GOPATH go build  %s -o /chaincode/output/chaincode %s", ldflagsOpt, pkgname),
 		InputStream:  codepackage,
 		OutputStream: binpackage,
 	})
@@ -529,7 +520,8 @@ func (goPlatform *Platform) GenerateDockerBuild(path string, code []byte, tw *ta
 	return cutil.WriteBytesToPackage("binpackage.tar", binpackage.Bytes(), tw)
 }
 
-//GetMetadataProvider fetches metadata provider given deployment spec
-func (goPlatform *Platform) GetMetadataProvider(code []byte) platforms.MetadataProvider {
-	return &ccmetadata.TargzMetadataProvider{Code: code}
+// GetMetadataProvider fetches metadata provider given deployment spec
+func (goPlatform *Platform) GetMetadataAsTarEntries(code []byte) ([]byte, error) {
+	metadataProvider := ccmetadata.TargzMetadataProvider{Code: code}
+	return metadataProvider.GetMetadataAsTarEntries()
 }

@@ -105,25 +105,38 @@ func TestLeaderYield(t *testing.T) {
 	// Make sure the other peer declares itself as the leader soon after.
 	takeOverMaxTimeout := time.Minute
 	viper.Set("peer.gossip.election.leaderAliveThreshold", time.Second*5)
-	viper.Set("peer.deliveryclient.reconnectTotalTimeThreshold", time.Second*5)
+	// Test case has only two instance + making assertions only after membership view
+	// is stable, hence election duration could be shorter
+	viper.Set("peer.gossip.election.leaderElectionDuration", time.Millisecond*500)
+	// It's enough to make single re-try
+	viper.Set("peer.deliveryclient.reconnectTotalTimeThreshold", time.Second*1)
+	// Since we ensuring gossip has stable membership, there is no need for
+	// leader election to wait for stabilization
+	viper.Set("peer.gossip.election.membershipSampleInterval", time.Millisecond*100)
+	// There is no ordering service available anyway, hence connection timeout
+	// could be shorter
+	viper.Set("peer.deliveryclient.connTimeout", time.Millisecond*100)
 	viper.Set("peer.gossip.useLeaderElection", true)
 	viper.Set("peer.gossip.orgLeader", false)
 	n := 2
-	portPrefix := 30000
-	gossips := startPeers(t, n, portPrefix)
+	gossips := startPeers(t, n, 0, 1)
 	defer stopPeers(gossips)
 	channelName := "channelA"
 	peerIndexes := []int{0, 1}
 	// Add peers to the channel
-	addPeersToChannel(t, n, portPrefix, channelName, gossips, peerIndexes)
+	addPeersToChannel(t, n, channelName, gossips, peerIndexes)
 	// Prime the membership view of the peers
-	waitForFullMembership(t, gossips, n, time.Second*30, time.Second*2)
+	waitForFullMembership(t, gossips, n, time.Second*30, time.Millisecond*100)
+
+	endpoint, socket := getAvailablePort(t)
+	socket.Close()
+
 	// Helper function that creates a gossipService instance
 	newGossipService := func(i int) *gossipServiceImpl {
-		gs := gossips[i].(*gossipServiceImpl)
+		gs := gossips[i].(*gossipGRPC).gossipServiceImpl
 		gs.deliveryFactory = &embeddingDeliveryServiceFactory{&deliveryFactoryImpl{}}
 		gossipServiceInstance = gs
-		gs.InitializeChannel(channelName, []string{"localhost:7050"}, Support{
+		gs.InitializeChannel(channelName, []string{endpoint}, Support{
 			Committer: &mockLedgerInfo{1},
 			Store:     &transientStoreMock{},
 		})
@@ -164,12 +177,13 @@ func TestLeaderYield(t *testing.T) {
 	// Wait for p1 to take over. It should take over before time reaches timeLimit
 	timeLimit := time.Now().Add(takeOverMaxTimeout)
 	for getLeader() != 1 && time.Now().Before(timeLimit) {
-		time.Sleep(time.Second)
+		time.Sleep(100 * time.Millisecond)
 	}
 	if time.Now().After(timeLimit) {
 		util.PrintStackTrace()
 		t.Fatalf("p1 hasn't taken over leadership within %v: %d", takeOverMaxTimeout, getLeader())
 	}
+	t.Log("p1 has taken over leadership")
 	p0.chains[channelName].Stop()
 	p1.chains[channelName].Stop()
 	p0.deliveryService[channelName].Stop()

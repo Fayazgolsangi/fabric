@@ -7,12 +7,17 @@ SPDX-License-Identifier: Apache-2.0
 package admin
 
 import (
+	"context"
+	"fmt"
+	"strings"
+
 	"github.com/golang/protobuf/ptypes/empty"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/protos/common"
 	pb "github.com/hyperledger/fabric/protos/peer"
 	"github.com/pkg/errors"
-	"golang.org/x/net/context"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 var logger = flogging.MustGetLogger("server")
@@ -35,6 +40,7 @@ func NewAdminServer(ace AccessControlEvaluator) *ServerAdmin {
 		v: &validator{
 			ace: ace,
 		},
+		specAtStartup: flogging.Global.Spec(),
 	}
 	return s
 }
@@ -42,6 +48,8 @@ func NewAdminServer(ace AccessControlEvaluator) *ServerAdmin {
 // ServerAdmin implementation of the Admin service for the Peer
 type ServerAdmin struct {
 	v requestValidator
+
+	specAtStartup string
 }
 
 func (s *ServerAdmin) GetStatus(ctx context.Context, env *common.Envelope) (*pb.ServerStatus, error) {
@@ -71,7 +79,7 @@ func (s *ServerAdmin) GetModuleLogLevel(ctx context.Context, env *common.Envelop
 	if request == nil {
 		return nil, errors.New("request is nil")
 	}
-	logLevelString := flogging.GetModuleLevel(request.LogModule)
+	logLevelString := flogging.GetLoggerLevel(request.LogModule)
 	logResponse := &pb.LogLevelResponse{LogModule: request.LogModule, LogLevel: logLevelString}
 	return logResponse, nil
 }
@@ -85,15 +93,50 @@ func (s *ServerAdmin) SetModuleLogLevel(ctx context.Context, env *common.Envelop
 	if request == nil {
 		return nil, errors.New("request is nil")
 	}
-	logLevelString, err := flogging.SetModuleLevel(request.LogModule, request.LogLevel)
-	logResponse := &pb.LogLevelResponse{LogModule: request.LogModule, LogLevel: logLevelString}
-	return logResponse, err
+
+	spec := fmt.Sprintf("%s:%s=%s", flogging.Global.Spec(), request.LogModule, request.LogLevel)
+	err = flogging.Global.ActivateSpec(spec)
+	if err != nil {
+		err = status.Errorf(codes.InvalidArgument, "error setting log spec to '%s': %s", spec, err.Error())
+		return nil, err
+	}
+
+	logResponse := &pb.LogLevelResponse{LogModule: request.LogModule, LogLevel: strings.ToUpper(request.LogLevel)}
+	return logResponse, nil
 }
 
 func (s *ServerAdmin) RevertLogLevels(ctx context.Context, env *common.Envelope) (*empty.Empty, error) {
 	if _, err := s.v.validate(ctx, env); err != nil {
 		return nil, err
 	}
-	err := flogging.RevertToPeerStartupLevels()
-	return &empty.Empty{}, err
+	flogging.ActivateSpec(s.specAtStartup)
+	return &empty.Empty{}, nil
+}
+
+func (s *ServerAdmin) GetLogSpec(ctx context.Context, env *common.Envelope) (*pb.LogSpecResponse, error) {
+	if _, err := s.v.validate(ctx, env); err != nil {
+		return nil, err
+	}
+	logSpec := flogging.Global.Spec()
+	logResponse := &pb.LogSpecResponse{LogSpec: logSpec}
+	return logResponse, nil
+}
+
+func (s *ServerAdmin) SetLogSpec(ctx context.Context, env *common.Envelope) (*pb.LogSpecResponse, error) {
+	op, err := s.v.validate(ctx, env)
+	if err != nil {
+		return nil, err
+	}
+	request := op.GetLogSpecReq()
+	if request == nil {
+		return nil, errors.New("request is nil")
+	}
+	err = flogging.Global.ActivateSpec(request.LogSpec)
+	logResponse := &pb.LogSpecResponse{
+		LogSpec: request.LogSpec,
+	}
+	if err != nil {
+		logResponse.Error = err.Error()
+	}
+	return logResponse, nil
 }

@@ -10,11 +10,10 @@ import (
 	"bytes"
 	"fmt"
 
-	"github.com/hyperledger/fabric/core/ledger/confighistory"
-
 	"github.com/golang/protobuf/proto"
 	"github.com/hyperledger/fabric/common/ledger/util/leveldbhelper"
 	"github.com/hyperledger/fabric/core/ledger"
+	"github.com/hyperledger/fabric/core/ledger/confighistory"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/bookkeeping"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/history/historydb"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/history/historydb/historyleveldb"
@@ -48,39 +47,51 @@ type Provider struct {
 	configHistoryMgr    confighistory.Mgr
 	stateListeners      []ledger.StateListener
 	bookkeepingProvider bookkeeping.Provider
+	initializer         *ledger.Initializer
+	collElgNotifier     *collElgNotifier
+	stats               *stats
 }
 
 // NewProvider instantiates a new Provider.
 // This is not thread-safe and assumed to be synchronized be the caller
 func NewProvider() (ledger.PeerLedgerProvider, error) {
-
 	logger.Info("Initializing ledger provider")
-
 	// Initialize the ID store (inventory of chainIds/ledgerIds)
 	idStore := openIDStore(ledgerconfig.GetLedgerProviderPath())
-
 	ledgerStoreProvider := ledgerstorage.NewProvider()
-
-	// Initialize the versioned database (state database)
-	vdbProvider, err := privacyenabledstate.NewCommonStorageDBProvider()
-	if err != nil {
-		return nil, err
-	}
-
 	// Initialize the history database (index for history of values by key)
 	historydbProvider := historyleveldb.NewHistoryDBProvider()
-	bookkeepingProvider := bookkeeping.NewProvider()
-	// Initialize config history mgr
-	configHistoryMgr := confighistory.NewMgr()
 	logger.Info("ledger provider Initialized")
-	provider := &Provider{idStore, ledgerStoreProvider, vdbProvider, historydbProvider, configHistoryMgr, nil, bookkeepingProvider}
-	provider.recoverUnderConstructionLedger()
+	provider := &Provider{idStore, ledgerStoreProvider,
+		nil, historydbProvider, nil, nil, nil, nil, nil, nil}
 	return provider, nil
 }
 
 // Initialize implements the corresponding method from interface ledger.PeerLedgerProvider
-func (provider *Provider) Initialize(stateListeners []ledger.StateListener) {
+func (provider *Provider) Initialize(initializer *ledger.Initializer) error {
+	var err error
+	configHistoryMgr := confighistory.NewMgr(initializer.DeployedChaincodeInfoProvider)
+	collElgNotifier := &collElgNotifier{
+		initializer.DeployedChaincodeInfoProvider,
+		initializer.MembershipInfoProvider,
+		make(map[string]collElgListener),
+	}
+	stateListeners := initializer.StateListeners
+	stateListeners = append(stateListeners, collElgNotifier)
+	stateListeners = append(stateListeners, configHistoryMgr)
+
+	provider.initializer = initializer
+	provider.configHistoryMgr = configHistoryMgr
 	provider.stateListeners = stateListeners
+	provider.collElgNotifier = collElgNotifier
+	provider.bookkeepingProvider = bookkeeping.NewProvider()
+	provider.vdbProvider, err = privacyenabledstate.NewCommonStorageDBProvider(provider.bookkeepingProvider, initializer.MetricsProvider, initializer.HealthCheckRegistry)
+	if err != nil {
+		return err
+	}
+	provider.stats = newStats(initializer.MetricsProvider)
+	provider.recoverUnderConstructionLedger()
+	return nil
 }
 
 // Create implements the corresponding method from interface ledger.PeerLedgerProvider
@@ -140,6 +151,7 @@ func (provider *Provider) openInternal(ledgerID string) (ledger.PeerLedger, erro
 	if err != nil {
 		return nil, err
 	}
+	provider.collElgNotifier.registerListener(ledgerID, blockStore)
 
 	// Get the versioned database (state database) for a chain/ledger
 	vDB, err := provider.vdbProvider.GetDBHandle(ledgerID)
@@ -155,7 +167,12 @@ func (provider *Provider) openInternal(ledgerID string) (ledger.PeerLedger, erro
 
 	// Create a kvLedger for this chain/ledger, which encasulates the underlying data stores
 	// (id store, blockstore, state database, history database)
-	l, err := newKVLedger(ledgerID, blockStore, vDB, historyDB, provider.configHistoryMgr, provider.stateListeners, provider.bookkeepingProvider)
+	l, err := newKVLedger(
+		ledgerID, blockStore, vDB, historyDB, provider.configHistoryMgr,
+		provider.stateListeners, provider.bookkeepingProvider,
+		provider.initializer.DeployedChaincodeInfoProvider,
+		provider.stats.ledgerStats(ledgerID),
+	)
 	if err != nil {
 		return nil, err
 	}

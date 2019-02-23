@@ -1,23 +1,14 @@
 /*
-Copyright 2017 Hitachi America, Ltd.
+Copyright Hitachi America, Ltd.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package node
 
 import (
 	"bytes"
+	"io/ioutil"
 	"os"
 	"testing"
 
@@ -32,21 +23,18 @@ import (
 
 func TestStartCmd(t *testing.T) {
 	defer viper.Reset()
-
 	g := NewGomegaWithT(t)
+
+	tempDir, err := ioutil.TempDir("", "startcmd")
+	g.Expect(err).NotTo(HaveOccurred())
+	defer os.RemoveAll(tempDir)
 
 	viper.Set("peer.address", "localhost:6051")
 	viper.Set("peer.listenAddress", "0.0.0.0:6051")
 	viper.Set("peer.chaincodeListenAddress", "0.0.0.0:6052")
-	viper.Set("peer.fileSystemPath", "/tmp/hyperledger/test")
+	viper.Set("peer.fileSystemPath", tempDir)
 	viper.Set("chaincode.executetimeout", "30s")
 	viper.Set("chaincode.mode", "dev")
-	overrideLogModules := []string{"msp", "gossip", "ledger", "cauthdsl", "policies", "grpc"}
-	for _, module := range overrideLogModules {
-		viper.Set("logging."+module, "INFO")
-	}
-
-	defer os.RemoveAll("/tmp/hyperledger/test")
 
 	msptesttools.LoadMSPSetupForTesting()
 
@@ -55,6 +43,14 @@ func TestStartCmd(t *testing.T) {
 		assert.NoError(t, cmd.Execute(), "expected to successfully start command")
 	}()
 
+	grpcProbe := func(addr string) bool {
+		c, err := grpc.Dial(addr, grpc.WithBlock(), grpc.WithInsecure())
+		if err == nil {
+			c.Close()
+			return true
+		}
+		return false
+	}
 	g.Eventually(grpcProbe("localhost:6051")).Should(BeTrue())
 }
 
@@ -176,13 +172,4 @@ func TestComputeChaincodeEndpoint(t *testing.T) {
 
 	/*** Scenario 4: set up both chaincodeAddress and chaincodeListenAddress ***/
 	// This scenario will be the same to scenarios 3: set up chaincodeAddress only.
-}
-
-func grpcProbe(addr string) bool {
-	c, err := grpc.Dial(addr, grpc.WithBlock(), grpc.WithInsecure())
-	if err == nil {
-		c.Close()
-		return true
-	}
-	return false
 }

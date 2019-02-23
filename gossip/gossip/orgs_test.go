@@ -15,9 +15,13 @@ import (
 	"time"
 
 	"github.com/hyperledger/fabric/bccsp/factory"
+	"github.com/hyperledger/fabric/common/metrics/disabled"
+	"github.com/hyperledger/fabric/core/comm"
 	"github.com/hyperledger/fabric/gossip/api"
 	"github.com/hyperledger/fabric/gossip/common"
 	"github.com/hyperledger/fabric/gossip/discovery"
+	"github.com/hyperledger/fabric/gossip/gossip/algo"
+	"github.com/hyperledger/fabric/gossip/metrics"
 	"github.com/hyperledger/fabric/gossip/util"
 	proto "github.com/hyperledger/fabric/protos/gossip"
 	"github.com/stretchr/testify/assert"
@@ -34,6 +38,7 @@ func init() {
 }
 
 type configurableCryptoService struct {
+	sync.RWMutex
 	m map[string]api.OrgIdentityType
 }
 
@@ -42,14 +47,18 @@ func (c *configurableCryptoService) Expiration(peerIdentity api.PeerIdentityType
 }
 
 func (c *configurableCryptoService) putInOrg(port int, org string) {
-	identity := fmt.Sprintf("localhost:%d", port)
+	identity := fmt.Sprintf("127.0.0.1:%d", port)
+	c.Lock()
 	c.m[identity] = api.OrgIdentityType(org)
+	c.Unlock()
 }
 
 // OrgByPeerIdentity returns the OrgIdentityType
 // of a given peer identity
 func (c *configurableCryptoService) OrgByPeerIdentity(identity api.PeerIdentityType) api.OrgIdentityType {
+	c.RLock()
 	org := c.m[string(identity)]
+	c.RUnlock()
 	return org
 }
 
@@ -93,11 +102,11 @@ func (*configurableCryptoService) Verify(peerIdentity api.PeerIdentityType, sign
 	return nil
 }
 
-func newGossipInstanceWithExternalEndpoint(portPrefix int, id int, mcs *configurableCryptoService, externalEndpoint string, boot ...int) Gossip {
-	port := id + portPrefix
+func newGossipInstanceWithGRPCWithExternalEndpoint(id int, port int, gRPCServer *comm.GRPCServer,
+	certs *common.TLSCertificates, secureDialOpts api.PeerSecureDialOpts, mcs *configurableCryptoService,
+	externalEndpoint string, boot ...int) Gossip {
 	conf := &Config{
-		BindPort:                   port,
-		BootstrapPeers:             bootPeers(portPrefix, boot...),
+		BootstrapPeers:             bootPeersWithPorts(boot...),
 		ID:                         fmt.Sprintf("p%d", id),
 		MaxBlockCountToStore:       100,
 		MaxPropagationBurstLatency: time.Duration(500) * time.Millisecond,
@@ -106,24 +115,31 @@ func newGossipInstanceWithExternalEndpoint(portPrefix int, id int, mcs *configur
 		PropagatePeerNum:           3,
 		PullInterval:               time.Duration(2) * time.Second,
 		PullPeerNum:                5,
-		InternalEndpoint:           fmt.Sprintf("localhost:%d", port),
+		InternalEndpoint:           fmt.Sprintf("127.0.0.1:%d", port),
 		ExternalEndpoint:           externalEndpoint,
 		PublishCertPeriod:          time.Duration(4) * time.Second,
 		PublishStateInfoInterval:   time.Duration(1) * time.Second,
 		RequestStateInfoInterval:   time.Duration(1) * time.Second,
+		TimeForMembershipTracker:   5 * time.Second,
+		TLSCerts:                   certs,
+		DigestWaitTime:             algo.DefDigestWaitTime,
+		RequestWaitTime:            algo.DefRequestWaitTime,
+		ResponseWaitTime:           algo.DefResponseWaitTime,
 	}
 	selfID := api.PeerIdentityType(conf.InternalEndpoint)
-	g := NewGossipServiceWithServer(conf, mcs, mcs, selfID,
-		nil)
-
-	return g
+	g := NewGossipService(conf, gRPCServer.Server(), mcs, mcs, selfID,
+		secureDialOpts, metrics.NewGossipMetrics(&disabled.Provider{}))
+	go func() {
+		gRPCServer.Start()
+	}()
+	return &gossipGRPC{gossipServiceImpl: g.(*gossipServiceImpl), grpc: gRPCServer}
 }
 
 func TestMultipleOrgEndpointLeakage(t *testing.T) {
 	t.Parallel()
 	defer testWG.Done()
 	// Scenario: create 2 organizations, each with 5 peers.
-	// The first org will have an anchor peer, but the second won't.
+	// Both organizations will have an anchor peer each
 	// The first 2 peers of each org would have an external endpoint, the rest won't.
 	// Have all peers join a channel with the 2 organizations.
 	// Ensure that after membership is stabilized:
@@ -132,17 +148,14 @@ func TestMultipleOrgEndpointLeakage(t *testing.T) {
 	// - The peers with external endpoint do not know the internal endpoints
 	//   of the peers of the other organizations.
 	cs := &configurableCryptoService{m: make(map[string]api.OrgIdentityType)}
-	portPrefix := 11610
 	peersInOrg := 5
 	orgA := "orgA"
 	orgB := "orgB"
+	channel := common.ChainID("TEST")
 	orgs := []string{orgA, orgB}
-	orgs2Peers := map[string][]Gossip{
-		orgs[0]: {},
-		orgs[1]: {},
-	}
+	peers := []Gossip{}
+
 	expectedMembershipSize := map[string]int{}
-	peers2Orgs := map[string]api.OrgIdentityType{}
 	peersWithExternalEndpoints := make(map[string]struct{})
 
 	shouldAKnowB := func(a common.PKIidType, b common.PKIidType) bool {
@@ -160,84 +173,83 @@ func TestMultipleOrgEndpointLeakage(t *testing.T) {
 		return bytes.Equal(orgOfPeerA, orgOfPeerB)
 	}
 
-	amountOfPeersShouldKnow := func(pkiID common.PKIidType) int {
-		return expectedMembershipSize[string(pkiID)]
+	var ports []int
+	var grpcs []*comm.GRPCServer
+	var certs []*common.TLSCertificates
+	var secDialOpts []api.PeerSecureDialOpts
+
+	for range orgs {
+		for i := 0; i < peersInOrg; i++ {
+			port, grpc, cert, secDialOpt, _ := util.CreateGRPCLayer()
+			ports = append(ports, port)
+			grpcs = append(grpcs, grpc)
+			certs = append(certs, cert)
+			secDialOpts = append(secDialOpts, secDialOpt)
+		}
 	}
 
-	for orgIndex := 0; orgIndex < 2; orgIndex++ {
+	for orgIndex, org := range orgs {
 		for i := 0; i < peersInOrg; i++ {
 			id := orgIndex*peersInOrg + i
-			port := id + portPrefix
-			org := orgs[orgIndex]
-			endpoint := fmt.Sprintf("localhost:%d", port)
-			peers2Orgs[endpoint] = api.OrgIdentityType(org)
-			cs.putInOrg(port, org)
-			membershipSizeExpected := peersInOrg - 1 // All the others in its org
-			var peer Gossip
-			var bootPeers []int
-			if orgIndex == 0 {
-				bootPeers = []int{0}
-			}
+			endpoint := fmt.Sprintf("127.0.0.1:%d", ports[id])
+			cs.putInOrg(ports[id], org)
+			expectedMembershipSize[endpoint] = peersInOrg - 1 // All the others in its org
 			externalEndpoint := ""
-			if i < 2 { // The first 2 peers of each org would have an external endpoint
+			if i < 2 {
+				// The first 2 peers of each org would have an external endpoint.
+				// orgA: 11610, 11611
+				// orgB: 11615, 11616
 				externalEndpoint = endpoint
 				peersWithExternalEndpoints[externalEndpoint] = struct{}{}
-				membershipSizeExpected += 2 // should know the extra 2 peers from the other org
+				expectedMembershipSize[endpoint] += 2 // should know the extra 2 peers from the other org
 			}
-			expectedMembershipSize[endpoint] = membershipSizeExpected
-			peer = newGossipInstanceWithExternalEndpoint(portPrefix, id, cs, externalEndpoint, bootPeers...)
-			orgs2Peers[org] = append(orgs2Peers[org], peer)
+			peer := newGossipInstanceWithGRPCWithExternalEndpoint(id, ports[id], grpcs[id], certs[id], secDialOpts[id],
+				cs, externalEndpoint)
+			peers = append(peers, peer)
 		}
 	}
 
 	jcm := &joinChanMsg{
 		members2AnchorPeers: map[string][]api.AnchorPeer{
 			orgA: {
-				{Host: "localhost", Port: 11611},
-				{Host: "localhost", Port: 11616},
+				{Host: "127.0.0.1", Port: ports[1]},
 			},
 			orgB: {
-				{Host: "localhost", Port: 11615},
+				{Host: "127.0.0.1", Port: ports[5]},
 			},
 		},
 	}
 
-	channel := common.ChainID("TEST")
-
-	for _, peers := range orgs2Peers {
-		for _, p := range peers {
-			p.JoinChan(jcm, channel)
-			p.UpdateLedgerHeight(1, channel)
-		}
+	for _, p := range peers {
+		p.JoinChan(jcm, channel)
+		p.UpdateLedgerHeight(1, channel)
 	}
 
 	membershipCheck := func() bool {
-		for _, peers := range orgs2Peers {
-			for _, p := range peers {
-				peerNetMember := p.(*gossipServiceImpl).selfNetworkMember()
-				pkiID := peerNetMember.PKIid
-				peersKnown := p.Peers()
-				peersToKnow := amountOfPeersShouldKnow(pkiID)
-				if peersToKnow != len(peersKnown) {
-					t.Logf("peer %#v doesn't know the needed amount of peers, extected %#v, actual %#v", peerNetMember.Endpoint, peersToKnow, len(peersKnown))
+		for _, p := range peers {
+			peerNetMember := p.(*gossipGRPC).gossipServiceImpl.selfNetworkMember()
+			pkiID := peerNetMember.PKIid
+			peersKnown := p.Peers()
+			peersToKnow := expectedMembershipSize[string(pkiID)]
+			if peersToKnow != len(peersKnown) {
+				t.Logf("peer %#v doesn't know the needed amount of peers, extected %#v, actual %#v", peerNetMember.Endpoint, peersToKnow, len(peersKnown))
+				return false
+			}
+			for _, knownPeer := range peersKnown {
+				if !shouldAKnowB(pkiID, knownPeer.PKIid) {
+					assert.Fail(t, fmt.Sprintf("peer %#v doesn't know %#v", peerNetMember.Endpoint, knownPeer.Endpoint))
 					return false
 				}
-				for _, knownPeer := range peersKnown {
-					if !shouldAKnowB(pkiID, knownPeer.PKIid) {
-						assert.Fail(t, fmt.Sprintf("peer %#v doesn't know %#v", peerNetMember.Endpoint, knownPeer.Endpoint))
+				internalEndpointLen := len(knownPeer.InternalEndpoint)
+				if shouldKnowInternalEndpoint(pkiID, knownPeer.PKIid) {
+					if internalEndpointLen == 0 {
+						t.Logf("peer: %v doesn't know internal endpoint of %v", peerNetMember.InternalEndpoint, string(knownPeer.PKIid))
 						return false
 					}
-					internalEndpointLen := len(knownPeer.InternalEndpoint)
-					if shouldKnowInternalEndpoint(pkiID, knownPeer.PKIid) {
-						if internalEndpointLen == 0 {
-							t.Logf("peer: %v doesn't know internal endpoint of %v", peerNetMember.InternalEndpoint, string(knownPeer.PKIid))
-							return false
-						}
-					} else {
-						if internalEndpointLen != 0 {
-							assert.Fail(t, fmt.Sprintf("peer: %v knows internal endpoint of %v (%#v)", peerNetMember.InternalEndpoint, string(knownPeer.PKIid), knownPeer.InternalEndpoint))
-							return false
-						}
+				} else {
+					if internalEndpointLen != 0 {
+						assert.Fail(t, fmt.Sprintf("peer: %v knows internal endpoint of %v (%#v)", peerNetMember.InternalEndpoint, string(knownPeer.PKIid), knownPeer.InternalEndpoint))
+						return false
 					}
 				}
 			}
@@ -245,12 +257,10 @@ func TestMultipleOrgEndpointLeakage(t *testing.T) {
 		return true
 	}
 
-	waitUntilOrFail(t, membershipCheck)
+	waitUntilOrFail(t, membershipCheck, "waiting for all instances to form membership view")
 
-	for _, peers := range orgs2Peers {
-		for _, p := range peers {
-			p.Stop()
-		}
+	for _, p := range peers {
+		p.Stop()
 	}
 }
 
@@ -276,7 +286,6 @@ func TestConfidentiality(t *testing.T) {
 	// from a peer in org Y about a peer in org Z not in {X, Y}
 	// or if any org other than orgB knows peers in orgD (and vice versa).
 
-	portPrefix := 12610
 	peersInOrg := 3
 	externalEndpointsInOrg := 2
 
@@ -303,11 +312,26 @@ func TestConfidentiality(t *testing.T) {
 		return false
 	}
 
+	var ports []int
+	var grpcs []*comm.GRPCServer
+	var certs []*common.TLSCertificates
+	var secDialOpts []api.PeerSecureDialOpts
+
+	for range orgs {
+		for j := 0; j < peersInOrg; j++ {
+			port, grpc, cert, secDialOpt, _ := util.CreateGRPCLayer()
+			ports = append(ports, port)
+			grpcs = append(grpcs, grpc)
+			certs = append(certs, cert)
+			secDialOpts = append(secDialOpts, secDialOpt)
+		}
+	}
+
 	// Create the message crypto service
 	cs := &configurableCryptoService{m: make(map[string]api.OrgIdentityType)}
 	for i, org := range orgs {
 		for j := 0; j < peersInOrg; j++ {
-			port := portPrefix + i*peersInOrg + j
+			port := ports[i*peersInOrg+j]
 			cs.putInOrg(port, org)
 		}
 	}
@@ -325,22 +349,22 @@ func TestConfidentiality(t *testing.T) {
 	for i, org := range orgs {
 		for j := 0; j < peersInOrg; j++ {
 			id := i*peersInOrg + j
-			port := id + portPrefix
-			endpoint := fmt.Sprintf("localhost:%d", port)
+			endpoint := fmt.Sprintf("127.0.0.1:%d", ports[id])
 			externalEndpoint := ""
 			if j < externalEndpointsInOrg { // The first peers of each org would have an external endpoint
 				externalEndpoint = endpoint
 				peersWithExternalEndpoints[string(endpoint)] = struct{}{}
 			}
-			peer := newGossipInstanceWithExternalEndpoint(portPrefix, id, cs, externalEndpoint)
+			peer := newGossipInstanceWithGRPCWithExternalEndpoint(id, ports[id], grpcs[id], certs[id], secDialOpts[id],
+				cs, externalEndpoint)
 			peers = append(peers, peer)
 			orgs2Peers[org] = append(orgs2Peers[org], peer)
 			t.Log(endpoint, "id:", id, "externalEndpoint:", externalEndpoint)
 			// The first peer of the org will be used as the anchor peer
 			if j == 0 {
 				anchorPeersByOrg[org] = api.AnchorPeer{
-					Host: "localhost",
-					Port: port,
+					Host: "127.0.0.1",
+					Port: ports[id],
 				}
 			}
 		}
@@ -362,7 +386,7 @@ func TestConfidentiality(t *testing.T) {
 	for _, p := range peers {
 		wg.Add(1)
 		_, msgs := p.Accept(msgSelector, true)
-		peerNetMember := p.(*gossipServiceImpl).selfNetworkMember()
+		peerNetMember := p.(*gossipGRPC).gossipServiceImpl.selfNetworkMember()
 		targetORg := string(cs.OrgByPeerIdentity(api.PeerIdentityType(peerNetMember.InternalEndpoint)))
 		go func(targetOrg string, msgs <-chan proto.ReceivedMessage) {
 			defer wg.Done()
@@ -418,7 +442,7 @@ func TestConfidentiality(t *testing.T) {
 			for i, p := range orgs2Peers[org] {
 				members := p.Peers()
 				expMemberSize := expectedMembershipSize(peersInOrg, externalEndpointsInOrg, org, i < externalEndpointsInOrg)
-				peerNetMember := p.(*gossipServiceImpl).selfNetworkMember()
+				peerNetMember := p.(*gossipGRPC).gossipServiceImpl.selfNetworkMember()
 				membersCount := len(members)
 				if membersCount < expMemberSize {
 					return false
@@ -431,7 +455,7 @@ func TestConfidentiality(t *testing.T) {
 		return true
 	}
 
-	waitUntilOrFail(t, assertMembership)
+	waitUntilOrFail(t, assertMembership, "waiting for all instances to form unified membership view")
 	stopPeers(peers)
 	wg.Wait()
 	atomic.StoreInt32(&finished, int32(1))

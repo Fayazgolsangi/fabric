@@ -7,13 +7,19 @@ SPDX-License-Identifier: Apache-2.0
 package persistence
 
 import (
+	"io/ioutil"
+
+	"github.com/hyperledger/fabric/common/chaincode"
+	"github.com/hyperledger/fabric/core/common/ccprovider"
 	"github.com/pkg/errors"
 )
 
 // StorePackageProvider is the interface needed to retrieve
 // the code package from a ChaincodeInstallPackage
 type StorePackageProvider interface {
-	Load(hash []byte) (codePackage []byte, name, version string, err error)
+	GetChaincodeInstallPath() string
+	ListInstalledChaincodes() ([]chaincode.InstalledChaincode, error)
+	Load(hash []byte) (codePackage []byte, metadata []*ChaincodeMetadata, err error)
 	RetrieveHash(name, version string) (hash []byte, err error)
 }
 
@@ -21,12 +27,19 @@ type StorePackageProvider interface {
 // the code package from a ChaincodeDeploymentSpec
 type LegacyPackageProvider interface {
 	GetChaincodeCodePackage(name, version string) (codePackage []byte, err error)
+	ListInstalledChaincodes(dir string, de ccprovider.DirEnumerator, ce ccprovider.ChaincodeExtractor) ([]chaincode.InstalledChaincode, error)
+}
+
+// PackageParser provides an implementation of chaincode package parsing
+type PackageParser interface {
+	Parse(data []byte) (*ChaincodePackage, error)
 }
 
 // PackageProvider holds the necessary dependencies to obtain the code
 // package bytes for a chaincode
 type PackageProvider struct {
 	Store    StorePackageProvider
+	Parser   PackageParser
 	LegacyPP LegacyPackageProvider
 }
 
@@ -65,11 +78,17 @@ func (p *PackageProvider) getCodePackageFromStore(name, version string) ([]byte,
 		return nil, errors.WithMessage(err, "error retrieving hash")
 	}
 
-	codePackage, _, _, err := p.Store.Load(hash)
+	fsBytes, _, err := p.Store.Load(hash)
 	if err != nil {
 		return nil, errors.WithMessage(err, "error loading code package from ChaincodeInstallPackage")
 	}
-	return codePackage, nil
+
+	ccPackage, err := p.Parser.Parse(fsBytes)
+	if err != nil {
+		return nil, errors.WithMessage(err, "error parsing chaincode package")
+	}
+
+	return ccPackage.CodePackage, nil
 }
 
 // GetCodePackageFromLegacyPP gets the code packages bytes from the
@@ -80,4 +99,30 @@ func (p *PackageProvider) getCodePackageFromLegacyPP(name, version string) ([]by
 		return nil, errors.Wrap(err, "error loading code package from ChaincodeDeploymentSpec")
 	}
 	return codePackage, nil
+}
+
+// ListInstalledChaincodes returns metadata (name, version, and ID) for
+// each chaincode installed on a peer
+func (p *PackageProvider) ListInstalledChaincodes() ([]chaincode.InstalledChaincode, error) {
+	// first look through ChaincodeInstallPackages
+	installedChaincodes, err := p.Store.ListInstalledChaincodes()
+
+	if err != nil {
+		// log the error and continue
+		logger.Debugf("error getting installed chaincodes from persistence store: %s", err)
+	}
+
+	// then look through CDS/SCDS
+	installedChaincodesLegacy, err := p.LegacyPP.ListInstalledChaincodes(p.Store.GetChaincodeInstallPath(), ioutil.ReadDir, ccprovider.LoadPackage)
+
+	if err != nil {
+		// log the error and continue
+		logger.Debugf("error getting installed chaincodes from ccprovider: %s", err)
+	}
+
+	for _, cc := range installedChaincodesLegacy {
+		installedChaincodes = append(installedChaincodes, cc)
+	}
+
+	return installedChaincodes, nil
 }

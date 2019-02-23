@@ -20,6 +20,9 @@ Organizations:{{ range .PeerOrgs }}
     Writers:
       Type: Signature
       Rule: OR('{{.MSPID}}.admin', '{{.MSPID}}.client')
+    Endorsement:
+      Type: Signature
+      Rule: OR('{{.MSPID}}.peer')
     Admins:
       Type: Signature
       Rule: OR('{{.MSPID}}.admin')
@@ -61,14 +64,8 @@ Channel: &ChannelDefaults
 
 Profiles:{{ range .Profiles }}
   {{ .Name }}:
-    {{- if .Orderers }}
     <<: *ChannelDefaults
-    Consortiums:{{ range $w.Consortiums }}
-      {{ .Name }}:
-        Organizations:{{ range .Organizations }}
-        - *{{ ($w.Organization .).MSPID }}
-        {{- end }}
-    {{- end }}
+    {{- if .Orderers }}
     Orderer:
       OrdererType: {{ $w.Consensus.Type }}
       Addresses:{{ range .Orderers }}{{ with $w.Orderer . }}
@@ -80,12 +77,23 @@ Profiles:{{ range .Profiles }}
         AbsoluteMaxBytes: 98 MB
         PreferredMaxBytes: 512 KB
       Capabilities:
-        V1_1: true
+        V2_0: true
       {{- if eq $w.Consensus.Type "kafka" }}
       Kafka:
         Brokers:{{ range $w.BrokerAddresses "HostPort" }}
         - {{ . }}
         {{- end }}
+      {{- end }}
+      {{- if eq $w.Consensus.Type "etcdraft" }}
+      EtcdRaft:
+        Options:
+          SnapshotInterval: 1 KB
+        Consenters:{{ range .Orderers }}{{ with $w.Orderer . }}
+        - Host: 127.0.0.1
+          Port: {{ $w.OrdererPort . "Listen" }}
+          ClientTLSCert: {{ $w.OrdererLocalCryptoDir . "tls" }}/server.crt
+          ServerTLSCert: {{ $w.OrdererLocalCryptoDir . "tls" }}/server.crt
+        {{- end }}{{- end }}
       {{- end }}
       Organizations:{{ range $w.OrgsForOrderers .Orderers }}
       - *{{ .MSPID }}
@@ -103,10 +111,13 @@ Profiles:{{ range .Profiles }}
         BlockValidation:
           Type: ImplicitMeta
           Rule: ANY Writers
-    {{- else }}
+    {{- end }}
+    {{- if .Consortium }}
+    Consortium: {{ .Consortium }}
     Application:
       Capabilities:
-        V1_2: true
+        V1_3: true
+        CAPABILITY_PLACEHOLDER: false
       Organizations:{{ range .Organizations }}
       - *{{ ($w.Organization .).MSPID }}
       {{- end}}
@@ -120,7 +131,19 @@ Profiles:{{ range .Profiles }}
         Admins:
           Type: ImplicitMeta
           Rule: MAJORITY Admins
-    Consortium: {{ .Consortium }}
+        LifecycleEndorsement:
+          Type: ImplicitMeta
+          Rule: "MAJORITY Endorsement"
+        Endorsement:
+          Type: ImplicitMeta
+          Rule: "MAJORITY Endorsement"
+    {{- else }}
+    Consortiums:{{ range $w.Consortiums }}
+      {{ .Name }}:
+        Organizations:{{ range .Organizations }}
+        - *{{ ($w.Organization .).MSPID }}
+        {{- end }}
+    {{- end }}
     {{- end }}
 {{- end }}
 {{ end }}

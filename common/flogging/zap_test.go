@@ -22,25 +22,26 @@ import (
 )
 
 func TestFabricLoggerEncoding(t *testing.T) {
-	flogging.Reset()
-	enc, err := fabenc.NewFormatEncoder("%{color}[%{module}] %{shortfunc} -> %{level:.4s}%{color:reset} %{message}")
+	formatters, err := fabenc.ParseFormat("%{color}[%{module}] %{shortfunc} -> %{level:.4s}%{color:reset} %{message}")
 	assert.NoError(t, err)
+	enc := fabenc.NewFormatEncoder(formatters...)
 
 	buf := &bytes.Buffer{}
-	zl := flogging.NewZapLogger("test", enc, zapcore.AddSync(buf), zap.Fields(zap.String("extra", "field")))
+	core := zapcore.NewCore(enc, zapcore.AddSync(buf), zap.NewAtomicLevel())
+	zl := flogging.NewZapLogger(core).Named("test").With(zap.String("extra", "field"))
 	fl := flogging.NewFabricLogger(zl)
 
 	buf.Reset()
 	fl.Info("string value", 0, 1.23, struct{}{})
-	assert.Equal(t, "\x1b[34m[test] TestFabricLoggerEncoding -> INFO\x1b[0m string value 0 1.23 {} {\"extra\": \"field\"}\n", buf.String())
+	assert.Equal(t, "\x1b[34m[test] TestFabricLoggerEncoding -> INFO\x1b[0m string value 0 1.23 {} extra=field\n", buf.String())
 
 	buf.Reset()
 	fl.Infof("string %s, %d, %.3f, %v", "strval", 0, 1.23, struct{}{})
-	assert.Equal(t, "\x1b[34m[test] TestFabricLoggerEncoding -> INFO\x1b[0m string strval, 0, 1.230, {} {\"extra\": \"field\"}\n", buf.String())
+	assert.Equal(t, "\x1b[34m[test] TestFabricLoggerEncoding -> INFO\x1b[0m string strval, 0, 1.230, {} extra=field\n", buf.String())
 
 	buf.Reset()
 	fl.Infow("this is a message", "int", 0, "float", 1.23, "struct", struct{}{})
-	assert.Equal(t, "\x1b[34m[test] TestFabricLoggerEncoding -> INFO\x1b[0m this is a message {\"extra\": \"field\", \"int\": 0, \"float\": 1.23, \"struct\": {}}\n", buf.String())
+	assert.Equal(t, "\x1b[34m[test] TestFabricLoggerEncoding -> INFO\x1b[0m this is a message extra=field int=0 float=1.23 struct={}\n", buf.String())
 }
 
 func TestFabricLogger(t *testing.T) {
@@ -270,8 +271,9 @@ func TestFabricLogger(t *testing.T) {
 }
 
 func TestIsEnabledFor(t *testing.T) {
-	enc, err := fabenc.NewFormatEncoder("%{color}[%{module}] %{shortfunc} -> %{level:.4s}%{color:reset} %{message}")
+	formatters, err := fabenc.ParseFormat("%{color}[%{module}] %{shortfunc} -> %{level:.4s}%{color:reset} %{message}")
 	assert.NoError(t, err)
+	enc := fabenc.NewFormatEncoder(formatters...)
 
 	enablerCallCount := 0
 	enabler := zap.LevelEnablerFunc(func(l zapcore.Level) bool {
@@ -280,7 +282,7 @@ func TestIsEnabledFor(t *testing.T) {
 	})
 
 	core := zapcore.NewCore(enc, zapcore.AddSync(ioutil.Discard), enabler)
-	zl := zap.New(core)
+	zl := zap.New(core).Named("test")
 	fl := flogging.NewFabricLogger(zl)
 
 	assert.True(t, fl.IsEnabledFor(zapcore.ErrorLevel))
@@ -293,8 +295,9 @@ func callWrapper(l grpclog.Logger, msg string) { logCaller(l, msg) }
 
 func TestGRPCLogger(t *testing.T) {
 	// ensure it includes the name as module, logs at debug level, and the caller with appropriate skip level
-	enc, err := fabenc.NewFormatEncoder("%{module} %{level} %{shortfunc} %{message}")
+	formatters, err := fabenc.ParseFormat("%{module} %{level} %{shortfunc} %{message}")
 	assert.NoError(t, err)
+	enc := fabenc.NewFormatEncoder(formatters...)
 
 	buf := &bytes.Buffer{}
 	enabler := zap.LevelEnablerFunc(func(l zapcore.Level) bool { return true })

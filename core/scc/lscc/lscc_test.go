@@ -28,7 +28,7 @@ import (
 	"github.com/hyperledger/fabric/core/chaincode/shim"
 	"github.com/hyperledger/fabric/core/common/ccprovider"
 	cutil "github.com/hyperledger/fabric/core/container/util"
-	"github.com/hyperledger/fabric/core/ledger/cceventmgmt"
+	"github.com/hyperledger/fabric/core/ledger/ledgermgmt"
 	"github.com/hyperledger/fabric/core/mocks/scc/lscc"
 	"github.com/hyperledger/fabric/core/policy"
 	policymocks "github.com/hyperledger/fabric/core/policy/mocks"
@@ -46,16 +46,6 @@ import (
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 )
-
-//go:generate counterfeiter -o mock/chaincode_stub.go --fake-name ChaincodeStub . chaincodeStub
-type chaincodeStub interface {
-	shim.ChaincodeStubInterface
-}
-
-//go:generate counterfeiter -o mock/state_query_iterator.go --fake-name StateQueryIterator . stateQueryIterator
-type stateQueryIterator interface {
-	shim.StateQueryIteratorInterface
-}
 
 func constructDeploymentSpec(name string, path string, version string, initArgs [][]byte, createInvalidIndex bool, createFS bool, scc *LifeCycleSysCC) (*pb.ChaincodeDeploymentSpec, error) {
 	spec := &pb.ChaincodeSpec{Type: pb.ChaincodeSpec_GOLANG, ChaincodeId: &pb.ChaincodeID{Name: name, Path: path, Version: version}, Input: &pb.ChaincodeInput{Args: initArgs}}
@@ -108,10 +98,9 @@ func constructDeploymentSpec(name string, path string, version string, initArgs 
 
 // TestInstall tests the install function with various inputs
 func TestInstall(t *testing.T) {
-	// Initialize cceventmgmt Mgr
-	// TODO cceventmgmt singleton should be refactored out of peer in the future. See CR 16549 for details.
-	cceventmgmt.Initialize(platforms.NewRegistry(&golang.Platform{}))
-
+	// Initialize ledgermgmt that inturn initializes internal components (such as cceventmgmt on which this test depends)
+	ledgermgmt.InitializeTestEnv()
+	defer ledgermgmt.CleanupTestEnv()
 	scc := New(NewMockProvider(), mockAclProvider, platforms.NewRegistry(&golang.Platform{}))
 	scc.Support = &lscc.MockSupport{}
 	stub := shim.NewMockStub("lscc", scc)
@@ -130,25 +119,25 @@ func TestInstall(t *testing.T) {
 	assert.NotEqual(t, int32(shim.OK), res.Status)
 	assert.Equal(t, "invalid number of arguments to lscc: 1", res.Message)
 
-	path := "github.com/hyperledger/fabric/examples/chaincode/go/example02/cmd"
+	path := "mychaincode"
 
-	testInstall(t, "example02", "0", path, false, "", "Alice", scc, stub)
-	testInstall(t, "example02-2", "1.0", path, false, "", "Alice", scc, stub)
-	testInstall(t, "example02.go", "0", path, false, InvalidChaincodeNameErr("example02.go").Error(), "Alice", scc, stub)
-	testInstall(t, "", "0", path, false, EmptyChaincodeNameErr("").Error(), "Alice", scc, stub)
-	testInstall(t, "example02", "1{}0", path, false, InvalidVersionErr("1{}0").Error(), "Alice", scc, stub)
-	testInstall(t, "example02", "0", path, true, InvalidStatedbArtifactsErr("").Error(), "Alice", scc, stub)
-	testInstall(t, "example02", "0", path, false, "access denied for [install]", "Bob", scc, stub)
-	testInstall(t, "example02-2", "1.0-alpha+001", path, false, "", "Alice", scc, stub)
-	testInstall(t, "example02-2", "1.0+sha.c0ffee", path, false, "", "Alice", scc, stub)
+	testInstall(t, "example02", "0", path, false, "", "Alice", scc, stub, nil)
+	testInstall(t, "example02-2", "1.0", path, false, "", "Alice", scc, stub, nil)
+	testInstall(t, "example02.go", "0", path, false, InvalidChaincodeNameErr("example02.go").Error(), "Alice", scc, stub, nil)
+	testInstall(t, "", "0", path, false, EmptyChaincodeNameErr("").Error(), "Alice", scc, stub, nil)
+	testInstall(t, "example02", "1{}0", path, false, InvalidVersionErr("1{}0").Error(), "Alice", scc, stub, nil)
+	testInstall(t, "example02", "0", path, true, InvalidStatedbArtifactsErr("").Error(), "Alice", scc, stub, nil)
+	testInstall(t, "example02", "0", path, false, "access denied for [install]", "Bob", scc, stub, errors.New("authorization error"))
+	testInstall(t, "example02-2", "1.0-alpha+001", path, false, "", "Alice", scc, stub, nil)
+	testInstall(t, "example02-2", "1.0+sha.c0ffee", path, false, "", "Alice", scc, stub, nil)
 
 	scc.Support.(*lscc.MockSupport).PutChaincodeToLocalStorageErr = errors.New("barf")
 
-	testInstall(t, "example02", "0", path, false, "barf", "Alice", scc, stub)
-	testInstall(t, "lscc", "0", path, false, "cannot install: lscc is the name of a system chaincode", "Alice", scc, stub)
+	testInstall(t, "example02", "0", path, false, "barf", "Alice", scc, stub, nil)
+	testInstall(t, "lscc", "0", path, false, "cannot install: lscc is the name of a system chaincode", "Alice", scc, stub, nil)
 }
 
-func testInstall(t *testing.T, ccname string, version string, path string, createInvalidIndex bool, expectedErrorMsg string, caller string, scc *LifeCycleSysCC, stub *shim.MockStub) {
+func testInstall(t *testing.T, ccname string, version string, path string, createInvalidIndex bool, expectedErrorMsg string, caller string, scc *LifeCycleSysCC, stub *shim.MockStub, aclErr error) {
 	identityDeserializer := &policymocks.MockIdentityDeserializer{
 		Identity: []byte("Alice"),
 		Msg:      []byte("msg1"),
@@ -175,6 +164,9 @@ func testInstall(t *testing.T, ccname string, version string, path string, creat
 	identityDeserializer.Msg = sProp.ProposalBytes
 	sProp.Signature = sProp.ProposalBytes
 
+	mockAclProvider.Reset()
+	mockAclProvider.On("CheckACL", resources.Lscc_Install, "", sProp).Return(aclErr)
+
 	if expectedErrorMsg == "" {
 		res := stub.MockInvokeWithSignedProposal("1", args, sProp)
 		assert.Equal(t, int32(shim.OK), res.Status, res.Message)
@@ -185,7 +177,7 @@ func testInstall(t *testing.T, ccname string, version string, path string, creat
 }
 
 func TestDeploy(t *testing.T) {
-	path := "github.com/hyperledger/fabric/examples/chaincode/go/example02/cmd"
+	path := "mychaincode"
 
 	testDeploy(t, "example02", "0", path, false, false, true, "", nil, nil, nil)
 	testDeploy(t, "example02", "1.0", path, false, false, true, "", nil, nil, nil)
@@ -244,7 +236,7 @@ func TestDeploy(t *testing.T) {
 	// As the PrivateChannelData is disabled, the following error message is expected due to the presence of
 	// collectionConfigBytes in the stub.args
 	errMessage := InvalidArgsLenErr(7).Error()
-	testDeploy(t, "example02", "1.0", path, false, false, true, InvalidArgsLenErr(7).Error(), scc, stub, []byte("collections"))
+	testDeploy(t, "example02", "1.0", path, false, false, true, PrivateChannelDataNotAvailable("").Error(), scc, stub, []byte("collections"))
 
 	// Enable PrivateChannelData
 	mocksccProvider := (&mscc.MocksccProviderFactory{
@@ -443,7 +435,7 @@ func testDeploy(t *testing.T, ccname string, version string, path string, forceB
 
 // TestUpgrade tests the upgrade function with various inputs for basic use cases
 func TestUpgrade(t *testing.T) {
-	path := "github.com/hyperledger/fabric/examples/chaincode/go/example02/cmd"
+	path := "mychaincode"
 
 	testUpgrade(t, "example02", "0", "example02", "1", path, "", nil, nil, nil)
 	testUpgrade(t, "example02", "0", "example02", "", path, EmptyVersionErr("example02").Error(), nil, nil, nil)
@@ -774,6 +766,8 @@ func TestGetInstalledChaincodes(t *testing.T) {
 			identityDeserializer.Msg = sProp.ProposalBytes
 			sProp.Signature = sProp.ProposalBytes
 
+			mockAclProvider.Reset()
+			mockAclProvider.On("CheckACL", resources.Lscc_GetInstalledChaincodes, "", sProp).Return(errors.New("authorization failure"))
 			res = stub.MockInvokeWithSignedProposal("1", [][]byte{[]byte(function)}, sProp)
 			assert.NotEqual(t, int32(shim.OK), res.Status)
 			assert.Contains(t, res.Message, "access denied for ["+function+"]")
@@ -782,6 +776,8 @@ func TestGetInstalledChaincodes(t *testing.T) {
 			identityDeserializer.Msg = sProp.ProposalBytes
 			sProp.Signature = sProp.ProposalBytes
 
+			mockAclProvider.Reset()
+			mockAclProvider.On("CheckACL", resources.Lscc_GetInstalledChaincodes, "", sProp).Return(nil)
 			res = stub.MockInvokeWithSignedProposal("1", [][]byte{[]byte(function)}, sProp)
 			assert.NotEqual(t, int32(shim.OK), res.Status)
 			assert.Equal(t, "proto: Marshal called with nil", res.Message)
@@ -889,6 +885,61 @@ func TestPutChaincodeCollectionData(t *testing.T) {
 	err = scc.putChaincodeCollectionData(stub, cd, ccpBytes)
 	assert.NoError(t, err)
 	stub.MockTransactionEnd("foo")
+}
+
+func TestGetChaincodeCollectionData(t *testing.T) {
+	scc := New(NewMockProvider(), mockAclProvider, platforms.NewRegistry(&golang.Platform{}))
+	stub := shim.NewMockStub("lscc", scc)
+	stub.ChannelID = "test"
+	scc.Support = &lscc.MockSupport{}
+
+	cd := &ccprovider.ChaincodeData{Name: "foo"}
+
+	collName1 := "mycollection1"
+	policyEnvelope := &common.SignaturePolicyEnvelope{}
+	coll1 := createCollectionConfig(collName1, policyEnvelope, 1, 2)
+	ccp := &common.CollectionConfigPackage{Config: []*common.CollectionConfig{coll1}}
+	ccpBytes, err := proto.Marshal(ccp)
+	assert.NoError(t, err)
+	assert.NotNil(t, ccpBytes)
+
+	stub.MockTransactionStart("foo")
+	err = scc.putChaincodeCollectionData(stub, cd, ccpBytes)
+	assert.NoError(t, err)
+	stub.MockTransactionEnd("foo")
+
+	res := stub.MockInit("1", nil)
+	assert.Equal(t, int32(shim.OK), res.Status, res.Message)
+
+	for _, function := range []string{"GetCollectionsConfig", "getcollectionsconfig"} {
+		sProp, _ := utils.MockSignedEndorserProposalOrPanic("test", &pb.ChaincodeSpec{}, []byte("Bob"), []byte("msg1"))
+		sProp.Signature = sProp.ProposalBytes
+
+		t.Run("invalid number of arguments", func(t *testing.T) {
+			res = stub.MockInvokeWithSignedProposal("1", util.ToChaincodeArgs(function, "foo", "bar"), nil)
+			assert.NotEqual(t, int32(shim.OK), res.Status)
+			assert.Equal(t, "invalid number of arguments to lscc: 3", res.Message)
+		})
+		t.Run("invalid identity", func(t *testing.T) {
+			mockAclProvider.Reset()
+			mockAclProvider.On("CheckACL", resources.Lscc_GetCollectionsConfig, "test", sProp).Return(errors.New("acl check failed"))
+			res = stub.MockInvokeWithSignedProposal("1", util.ToChaincodeArgs(function, "foo"), sProp)
+			assert.NotEqual(t, int32(shim.OK), res.Status)
+			assert.Contains(t, res.Message, "access denied for ["+function+"]")
+		})
+		t.Run("non-exists collections config", func(t *testing.T) {
+			mockAclProvider.Reset()
+			mockAclProvider.On("CheckACL", resources.Lscc_GetCollectionsConfig, "test", sProp).Return(nil)
+			res = stub.MockInvokeWithSignedProposal("1", util.ToChaincodeArgs(function, "bar"), sProp)
+			assert.NotEqual(t, int32(shim.OK), res.Status)
+			assert.Equal(t, res.Message, "collections config not defined for chaincode bar")
+		})
+		t.Run("Success", func(t *testing.T) {
+			res = stub.MockInvokeWithSignedProposal("1", util.ToChaincodeArgs(function, "foo"), sProp)
+			assert.Equal(t, int32(shim.OK), res.Status)
+			assert.NotNil(t, res.Payload)
+		})
+	}
 }
 
 func TestCheckCollectionMemberPolicy(t *testing.T) {

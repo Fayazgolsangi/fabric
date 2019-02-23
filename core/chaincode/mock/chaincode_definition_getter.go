@@ -9,11 +9,11 @@ import (
 )
 
 type ChaincodeDefinitionGetter struct {
-	ChaincodeDefinitionStub        func(chaincodeName string, txSim ledger.QueryExecutor) (ccprovider.ChaincodeDefinition, error)
+	ChaincodeDefinitionStub        func(chaincodeName string, txSim ledger.SimpleQueryExecutor) (ccprovider.ChaincodeDefinition, error)
 	chaincodeDefinitionMutex       sync.RWMutex
 	chaincodeDefinitionArgsForCall []struct {
 		chaincodeName string
-		txSim         ledger.QueryExecutor
+		txSim         ledger.SimpleQueryExecutor
 	}
 	chaincodeDefinitionReturns struct {
 		result1 ccprovider.ChaincodeDefinition
@@ -27,12 +27,12 @@ type ChaincodeDefinitionGetter struct {
 	invocationsMutex sync.RWMutex
 }
 
-func (fake *ChaincodeDefinitionGetter) ChaincodeDefinition(chaincodeName string, txSim ledger.QueryExecutor) (ccprovider.ChaincodeDefinition, error) {
+func (fake *ChaincodeDefinitionGetter) ChaincodeDefinition(chaincodeName string, txSim ledger.SimpleQueryExecutor) (ccprovider.ChaincodeDefinition, error) {
 	fake.chaincodeDefinitionMutex.Lock()
 	ret, specificReturn := fake.chaincodeDefinitionReturnsOnCall[len(fake.chaincodeDefinitionArgsForCall)]
 	fake.chaincodeDefinitionArgsForCall = append(fake.chaincodeDefinitionArgsForCall, struct {
 		chaincodeName string
-		txSim         ledger.QueryExecutor
+		txSim         ledger.SimpleQueryExecutor
 	}{chaincodeName, txSim})
 	fake.recordInvocation("ChaincodeDefinition", []interface{}{chaincodeName, txSim})
 	fake.chaincodeDefinitionMutex.Unlock()
@@ -51,7 +51,7 @@ func (fake *ChaincodeDefinitionGetter) ChaincodeDefinitionCallCount() int {
 	return len(fake.chaincodeDefinitionArgsForCall)
 }
 
-func (fake *ChaincodeDefinitionGetter) ChaincodeDefinitionArgsForCall(i int) (string, ledger.QueryExecutor) {
+func (fake *ChaincodeDefinitionGetter) ChaincodeDefinitionArgsForCall(i int) (string, ledger.SimpleQueryExecutor) {
 	fake.chaincodeDefinitionMutex.RLock()
 	defer fake.chaincodeDefinitionMutex.RUnlock()
 	return fake.chaincodeDefinitionArgsForCall[i].chaincodeName, fake.chaincodeDefinitionArgsForCall[i].txSim

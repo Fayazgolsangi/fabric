@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric/common/metrics"
 	"github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/core/chaincode/platforms"
 	"github.com/hyperledger/fabric/core/common/ccprovider"
@@ -36,23 +37,27 @@ type Launcher interface {
 // Lifecycle provides a way to retrieve chaincode definitions and the packages necessary to run them
 type Lifecycle interface {
 	// ChaincodeDefinition returns the details for a chaincode by name
-	ChaincodeDefinition(chaincodeName string, txSim ledger.QueryExecutor) (ccprovider.ChaincodeDefinition, error)
+	ChaincodeDefinition(chaincodeName string, qe ledger.SimpleQueryExecutor) (ccprovider.ChaincodeDefinition, error)
 
 	// ChaincodeContainerInfo returns the package necessary to launch a chaincode
-	ChaincodeContainerInfo(chainID string, chaincodeID string) (*ccprovider.ChaincodeContainerInfo, error)
+	ChaincodeContainerInfo(chaincodeName string, qe ledger.SimpleQueryExecutor) (*ccprovider.ChaincodeContainerInfo, error)
 }
 
 // ChaincodeSupport responsible for providing interfacing with chaincodes from the Peer.
 type ChaincodeSupport struct {
-	Keepalive        time.Duration
-	ExecuteTimeout   time.Duration
-	UserRunsCC       bool
-	Runtime          Runtime
-	ACLProvider      ACLProvider
-	HandlerRegistry  *HandlerRegistry
-	Launcher         Launcher
-	SystemCCProvider sysccprovider.SystemChaincodeProvider
-	Lifecycle        Lifecycle
+	Keepalive              time.Duration
+	ExecuteTimeout         time.Duration
+	UserRunsCC             bool
+	Runtime                Runtime
+	ACLProvider            ACLProvider
+	HandlerRegistry        *HandlerRegistry
+	Launcher               Launcher
+	SystemCCProvider       sysccprovider.SystemChaincodeProvider
+	Lifecycle              Lifecycle
+	appConfig              ApplicationConfigRetriever
+	HandlerMetrics         *HandlerMetrics
+	LaunchMetrics          *LaunchMetrics
+	DeployedCCInfoProvider ledger.DeployedChaincodeInfoProvider
 }
 
 // NewChaincodeSupport creates a new ChaincodeSupport instance.
@@ -68,15 +73,22 @@ func NewChaincodeSupport(
 	processor Processor,
 	SystemCCProvider sysccprovider.SystemChaincodeProvider,
 	platformRegistry *platforms.Registry,
+	appConfig ApplicationConfigRetriever,
+	metricsProvider metrics.Provider,
+	deployedCCInfoProvider ledger.DeployedChaincodeInfoProvider,
 ) *ChaincodeSupport {
 	cs := &ChaincodeSupport{
-		UserRunsCC:       userRunsCC,
-		Keepalive:        config.Keepalive,
-		ExecuteTimeout:   config.ExecuteTimeout,
-		HandlerRegistry:  NewHandlerRegistry(userRunsCC),
-		ACLProvider:      aclProvider,
-		SystemCCProvider: SystemCCProvider,
-		Lifecycle:        lifecycle,
+		UserRunsCC:             userRunsCC,
+		Keepalive:              config.Keepalive,
+		ExecuteTimeout:         config.ExecuteTimeout,
+		HandlerRegistry:        NewHandlerRegistry(userRunsCC),
+		ACLProvider:            aclProvider,
+		SystemCCProvider:       SystemCCProvider,
+		Lifecycle:              lifecycle,
+		appConfig:              appConfig,
+		HandlerMetrics:         NewHandlerMetrics(metricsProvider),
+		LaunchMetrics:          NewLaunchMetrics(metricsProvider),
+		DeployedCCInfoProvider: deployedCCInfoProvider,
 	}
 
 	// Keep TestQueries working
@@ -102,12 +114,13 @@ func NewChaincodeSupport(
 		Registry:        cs.HandlerRegistry,
 		PackageProvider: packageProvider,
 		StartupTimeout:  config.StartupTimeout,
+		Metrics:         cs.LaunchMetrics,
 	}
 
 	return cs
 }
 
-// LaunchForInit bypasses getting the chaincode spec from the LSCC table
+// LaunchInit bypasses getting the chaincode spec from the LSCC table
 // as in the case of v1.0-v1.2 lifecycle, the chaincode will not yet be
 // defined in the LSCC table
 func (cs *ChaincodeSupport) LaunchInit(ccci *ccprovider.ChaincodeContainerInfo) error {
@@ -122,13 +135,13 @@ func (cs *ChaincodeSupport) LaunchInit(ccci *ccprovider.ChaincodeContainerInfo) 
 // Launch starts executing chaincode if it is not already running. This method
 // blocks until the peer side handler gets into ready state or encounters a fatal
 // error. If the chaincode is already running, it simply returns.
-func (cs *ChaincodeSupport) Launch(chainID, chaincodeName, chaincodeVersion string) (*Handler, error) {
+func (cs *ChaincodeSupport) Launch(chainID, chaincodeName, chaincodeVersion string, qe ledger.QueryExecutor) (*Handler, error) {
 	cname := chaincodeName + ":" + chaincodeVersion
 	if h := cs.HandlerRegistry.Handler(cname); h != nil {
 		return h, nil
 	}
 
-	ccci, err := cs.Lifecycle.ChaincodeContainerInfo(chainID, chaincodeName)
+	ccci, err := cs.Lifecycle.ChaincodeContainerInfo(chaincodeName, qe)
 	if err != nil {
 		// TODO: There has to be a better way to do this...
 		if cs.UserRunsCC {
@@ -154,12 +167,7 @@ func (cs *ChaincodeSupport) Launch(chainID, chaincodeName, chaincodeVersion stri
 
 // Stop stops a chaincode if running.
 func (cs *ChaincodeSupport) Stop(ccci *ccprovider.ChaincodeContainerInfo) error {
-	err := cs.Runtime.Stop(ccci)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return cs.Runtime.Stop(ccci)
 }
 
 // HandleChaincodeStream implements ccintf.HandleChaincodeStream for all vms to call with appropriate stream
@@ -178,6 +186,9 @@ func (cs *ChaincodeSupport) HandleChaincodeStream(stream ccintf.ChaincodeStream)
 		QueryResponseBuilder:       &QueryResponseGenerator{MaxResultLimit: 100},
 		UUIDGenerator:              UUIDGeneratorFunc(util.GenerateUUID),
 		LedgerGetter:               peer.Default,
+		DeployedCCInfoProvider:     cs.DeployedCCInfoProvider,
+		AppConfig:                  cs.appConfig,
+		Metrics:                    cs.HandlerMetrics,
 	}
 
 	return handler.ProcessStream(stream)
@@ -263,7 +274,7 @@ func processChaincodeExecutionResult(txid, ccName string, resp *pb.ChaincodeMess
 }
 
 func (cs *ChaincodeSupport) InvokeInit(txParams *ccprovider.TransactionParams, cccid *ccprovider.CCContext, input *pb.ChaincodeInput) (*pb.ChaincodeMessage, error) {
-	h, err := cs.Launch(txParams.ChannelID, cccid.Name, cccid.Version)
+	h, err := cs.Launch(txParams.ChannelID, cccid.Name, cccid.Version, txParams.TXSimulator)
 	if err != nil {
 		return nil, err
 	}
@@ -274,7 +285,7 @@ func (cs *ChaincodeSupport) InvokeInit(txParams *ccprovider.TransactionParams, c
 // Invoke will invoke chaincode and return the message containing the response.
 // The chaincode will be launched if it is not already running.
 func (cs *ChaincodeSupport) Invoke(txParams *ccprovider.TransactionParams, cccid *ccprovider.CCContext, input *pb.ChaincodeInput) (*pb.ChaincodeMessage, error) {
-	h, err := cs.Launch(txParams.ChannelID, cccid.Name, cccid.Version)
+	h, err := cs.Launch(txParams.ChannelID, cccid.Name, cccid.Version, txParams.TXSimulator)
 	if err != nil {
 		return nil, err
 	}

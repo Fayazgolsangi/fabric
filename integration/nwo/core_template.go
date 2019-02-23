@@ -8,23 +8,14 @@ package nwo
 
 const DefaultCoreTemplate = `---
 logging:
-  level:      info
-  cauthdsl:   warning
-  gossip:     warning
-  grpc:       error
-  ledger:     info
-  msp:        warning
-  policies:   warning
-  peer:
-    gossip: warning
   format: '%{color}%{time:2006-01-02 15:04:05.000 MST} [%{module}] %{shortfunc} -> %{level:.4s} %{id:03x}%{color:reset} %{message}'
 
 peer:
   id: {{ Peer.ID }}
   networkId: {{ .NetworkID }}
-  address: 0.0.0.0:{{ .PeerPort Peer "Listen" }}
-  addressAutoDetect: false
-  listenAddress: 0.0.0.0:{{ .PeerPort Peer "Listen" }}
+  address: 127.0.0.1:{{ .PeerPort Peer "Listen" }}
+  addressAutoDetect: true
+  listenAddress: 127.0.0.1:{{ .PeerPort Peer "Listen" }}
   chaincodeListenAddress: 0.0.0.0:{{ .PeerPort Peer "Chaincode" }}
   gomaxprocs: -1
   keepalive:
@@ -36,7 +27,7 @@ peer:
       interval: 60s
       timeout: 20s
   gossip:
-    bootstrap: 0.0.0.0:{{ .PeerPort Peer "Listen" }}
+    bootstrap: 127.0.0.1:{{ .PeerPort Peer "Listen" }}
     useLeaderElection: true
     orgLeader: false
     endpoint:
@@ -61,7 +52,7 @@ peer:
     aliveTimeInterval: 5s
     aliveExpirationTimeout: 25s
     reconnectInterval: 25s
-    externalEndpoint: 0.0.0.0:{{ .PeerPort Peer "Listen" }}
+    externalEndpoint: 127.0.0.1:{{ .PeerPort Peer "Listen" }}
     election:
       startupGracePeriod: 15s
       membershipSampleInterval: 1s
@@ -71,25 +62,28 @@ peer:
       pullRetryThreshold: 60s
       transientstoreMaxBlockRetention: 1000
       pushAckTimeout: 3s
+      reconcileBatchSize: 10
+      reconcileSleepInterval: 10s
+      reconciliationEnabled: true
   events:
-    address: 0.0.0.0:{{ .PeerPort Peer "Events" }}
+    address: 127.0.0.1:{{ .PeerPort Peer "Events" }}
     buffersize: 100
     timeout: 10ms
     timewindow: 15m
     keepalive:
       minInterval: 60s
   tls:
-    enabled:  false
+    enabled:  true
     clientAuthRequired: false
     cert:
-      file: tls/server.crt
+      file: {{ .PeerLocalTLSDir Peer }}/server.crt
     key:
-      file: tls/server.key
+      file: {{ .PeerLocalTLSDir Peer }}/server.key
     rootcert:
-      file: tls/ca.crt
+      file: {{ .PeerLocalTLSDir Peer }}/ca.crt
     clientRootCAs:
       files:
-      - tls/ca.crt
+      - {{ .PeerLocalTLSDir Peer }}/ca.crt
   authentication:
     timewindow: 15m
   fileSystemPath: filesystem
@@ -140,7 +134,7 @@ vm:
         file: docker/tls.crt
       key:
         file: docker/tls.key
-    attachStdout: false
+    attachStdout: true
     hostConfig:
       NetworkMode: host
       LogConfig:
@@ -151,26 +145,26 @@ vm:
       Memory: 2147483648
 
 chaincode:
-  builder: $(DOCKER_NS)/fabric-ccenv:$(ARCH)-$(PROJECT_VERSION)
+  builder: $(DOCKER_NS)/fabric-ccenv:$(PROJECT_VERSION)
   pull: false
   golang:
-    runtime: $(BASE_DOCKER_NS)/fabric-baseos:$(ARCH)-$(BASE_VERSION)
+    runtime: $(BASE_DOCKER_NS)/fabric-baseos:$(PROJECT_VERSION)
     dynamicLink: false
   car:
-    runtime: $(BASE_DOCKER_NS)/fabric-baseos:$(ARCH)-$(BASE_VERSION)
+    runtime: $(BASE_DOCKER_NS)/fabric-baseos:$(PROJECT_VERSION)
   java:
-    Dockerfile:  |
-      from $(DOCKER_NS)/fabric-javaenv:$(ARCH)-1.1.0
+    runtime: $(DOCKER_NS)/fabric-javaenv:latest
   node:
-      runtime: $(BASE_DOCKER_NS)/fabric-baseimage:$(ARCH)-$(BASE_VERSION)
+    runtime: $(DOCKER_NS)/fabric-nodeenv:latest
   startuptimeout: 300s
   executetimeout: 30s
   mode: net
   keepalive: 0
   system:
-    cscc: enable
-    lscc: enable
-    qscc: enable
+    _lifecycle: enable
+    cscc:       enable
+    lscc:       enable
+    qscc:       enable
   systemPlugins:
   logging:
     level:  info
@@ -193,4 +187,24 @@ ledger:
       warmIndexesAfterNBlocks: 1
   history:
     enableHistoryDatabase: true
+
+operations:
+  listenAddress: 127.0.0.1:{{ .PeerPort Peer "Operations" }}
+  tls:
+    enabled: true
+    cert:
+      file: {{ .PeerLocalTLSDir Peer }}/server.crt
+    key:
+      file: {{ .PeerLocalTLSDir Peer }}/server.key
+    clientAuthRequired: false
+    clientRootCAs:
+      files:
+      - {{ .PeerLocalTLSDir Peer }}/ca.crt
+metrics:
+  provider: {{ .MetricsProvider }}
+  statsd:
+    network: udp
+    address: {{ if .StatsdEndpoint }}{{ .StatsdEndpoint }}{{ else }}127.0.0.1:8125{{ end }}
+    writeInterval: 5s
+    prefix: {{ ReplaceAll (ToLower Peer.ID) "." "_" }}
 `

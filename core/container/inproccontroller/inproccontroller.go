@@ -7,6 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 package inproccontroller
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/hyperledger/fabric/common/flogging"
@@ -72,7 +73,7 @@ func (r *Registry) NewVM() container.VM {
 	return NewInprocVM(r)
 }
 
-//Register registers system chaincode with given path. The deploy should be called to initialize
+// Register registers system chaincode with given path. The deploy should be called to initialize
 func (r *Registry) Register(ccid *ccintf.CCID, cc shim.Chaincode) error {
 	name := ccid.GetName()
 	inprocLogger.Debugf("Registering chaincode instance: %s", name)
@@ -85,9 +86,8 @@ func (r *Registry) Register(ccid *ccintf.CCID, cc shim.Chaincode) error {
 	return nil
 }
 
-//InprocVM is a vm. It is identified by a executable name
+// InprocVM is a vm. It is identified by a executable name
 type InprocVM struct {
-	id       string
 	registry *Registry
 }
 
@@ -234,6 +234,12 @@ func (vm *InprocVM) Stop(ccid ccintf.CCID, timeout uint, dontkill bool, dontremo
 
 	delete(vm.registry.instRegistry, instName)
 	//TODO stop
+	return nil
+}
+
+// HealthCheck is provided in order to implement the VMProvider interface.
+// It always returns nil..
+func (vm *InprocVM) HealthCheck(ctx context.Context) error {
 	return nil
 }
 

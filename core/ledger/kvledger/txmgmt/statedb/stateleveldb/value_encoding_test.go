@@ -10,9 +10,9 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/hyperledger/fabric/common/ledger/testutil"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/statedb"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/version"
+	"github.com/stretchr/testify/assert"
 )
 
 // TestEncodeString tests encoding and decoding a string value using old format
@@ -21,8 +21,8 @@ func TestEncodeDecodeStringOldFormat(t *testing.T) {
 	version1 := version.NewHeight(1, 1)
 	encodedValue := encodeValueOldFormat(bytesString1, version1)
 	decodedValue, err := decodeValue(encodedValue)
-	testutil.AssertNoError(t, err, "")
-	testutil.AssertEquals(t, decodedValue, &statedb.VersionedValue{Version: version1, Value: bytesString1})
+	assert.NoError(t, err)
+	assert.Equal(t, &statedb.VersionedValue{Version: version1, Value: bytesString1}, decodedValue)
 }
 
 // TestEncodeDecodeJSONOldFormat tests encoding and decoding a JSON value using old format
@@ -31,12 +31,16 @@ func TestEncodeDecodeJSONOldFormat(t *testing.T) {
 	version2 := version.NewHeight(1, 1)
 	encodedValue := encodeValueOldFormat(bytesJSON2, version2)
 	decodedValue, err := decodeValue(encodedValue)
-	testutil.AssertNoError(t, err, "")
-	testutil.AssertEquals(t, decodedValue, &statedb.VersionedValue{Version: version2, Value: bytesJSON2})
+	assert.NoError(t, err)
+	assert.Equal(t, &statedb.VersionedValue{Version: version2, Value: bytesJSON2}, decodedValue)
 }
 
 func TestEncodeDecodeOldAndNewFormat(t *testing.T) {
 	testdata := []*statedb.VersionedValue{
+		{
+			Value:   []byte("value0"),
+			Version: version.NewHeight(0, 0),
+		},
 		{
 			Value:   []byte("value1"),
 			Version: version.NewHeight(1, 2),
@@ -61,7 +65,10 @@ func TestEncodeDecodeOldAndNewFormat(t *testing.T) {
 
 	for i, testdatum := range testdata {
 		t.Run(fmt.Sprintf("testcase-oldfmt-%d", i),
-			func(t *testing.T) { testEncodeDecodeOldFormat(t, testdatum) },
+			func(t *testing.T) {
+				testdatum.Metadata = nil
+				testEncodeDecodeOldFormat(t, testdatum)
+			},
 		)
 	}
 
@@ -69,19 +76,17 @@ func TestEncodeDecodeOldAndNewFormat(t *testing.T) {
 
 func testEncodeDecodeNewFormat(t *testing.T, v *statedb.VersionedValue) {
 	encodedNewFmt, err := encodeValue(v)
-	testutil.AssertNoError(t, err, "")
+	assert.NoError(t, err)
 	// encoding-decoding using new format should return the same versioned_value
 	decodedFromNewFmt, err := decodeValue(encodedNewFmt)
-	testutil.AssertNoError(t, err, "")
-	testutil.AssertEquals(t, decodedFromNewFmt, v)
+	assert.NoError(t, err)
+	assert.Equal(t, v, decodedFromNewFmt)
 }
 
 func testEncodeDecodeOldFormat(t *testing.T, v *statedb.VersionedValue) {
 	encodedOldFmt := encodeValueOldFormat(v.Value, v.Version)
 	// decodeValue should be able to handle the old format
 	decodedFromOldFmt, err := decodeValue(encodedOldFmt)
-	testutil.AssertNoError(t, err, "")
-	testutil.AssertEquals(t, decodedFromOldFmt.Value, v.Value)
-	testutil.AssertEquals(t, decodedFromOldFmt.Version, v.Version)
-	testutil.AssertNil(t, decodedFromOldFmt.Metadata)
+	assert.NoError(t, err)
+	assert.Equal(t, v, decodedFromOldFmt)
 }

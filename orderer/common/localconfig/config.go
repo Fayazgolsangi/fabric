@@ -9,12 +9,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Shopify/sarama"
 	bccsp "github.com/hyperledger/fabric/bccsp/factory"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/common/viperutil"
 	coreconfig "github.com/hyperledger/fabric/core/config"
-
-	"github.com/Shopify/sarama"
 	"github.com/spf13/viper"
 )
 
@@ -34,6 +33,9 @@ type TopLevel struct {
 	RAMLedger  RAMLedger
 	Kafka      Kafka
 	Debug      Debug
+	Consensus  interface{}
+	Operations Operations
+	Metrics    Metrics
 }
 
 // General contains config which should be common among all orderer types.
@@ -42,18 +44,35 @@ type General struct {
 	ListenAddress  string
 	ListenPort     uint16
 	TLS            TLS
+	Cluster        Cluster
 	Keepalive      Keepalive
 	GenesisMethod  string
 	GenesisProfile string
 	SystemChannel  string
 	GenesisFile    string
 	Profile        Profile
-	LogLevel       string
-	LogFormat      string
 	LocalMSPDir    string
 	LocalMSPID     string
 	BCCSP          *bccsp.FactoryOpts
 	Authentication Authentication
+}
+
+type Cluster struct {
+	ListenAddress                        string
+	ListenPort                           uint16
+	ServerCertificate                    string
+	ServerPrivateKey                     string
+	ClientCertificate                    string
+	ClientPrivateKey                     string
+	RootCAs                              []string
+	DialTimeout                          time.Duration
+	RPCTimeout                           time.Duration
+	ReplicationBufferSize                int
+	ReplicationPullTimeout               time.Duration
+	ReplicationRetryTimeout              time.Duration
+	ReplicationBackgroundRefreshInterval time.Duration
+	ReplicationMaxRetries                int
+	SendBufferSize                       int
 }
 
 // Keepalive contains configuration for gRPC servers.
@@ -110,6 +129,7 @@ type Kafka struct {
 	Version   sarama.KafkaVersion // TODO Move this to global config
 	TLS       TLS
 	SASLPlain SASLPlain
+	Topic     Topic
 }
 
 // Retry contains configuration related to retries and timeouts when the
@@ -155,10 +175,35 @@ type Consumer struct {
 	RetryBackoff time.Duration
 }
 
+// Topic contains the settings to use when creating Kafka topics
+type Topic struct {
+	ReplicationFactor int16
+}
+
 // Debug contains configuration for the orderer's debug parameters.
 type Debug struct {
 	BroadcastTraceDir string
 	DeliverTraceDir   string
+}
+
+// Operations configures the operations endpont for the orderer.
+type Operations struct {
+	ListenAddress string
+	TLS           TLS
+}
+
+// Operations confiures the metrics provider for the orderer.
+type Metrics struct {
+	Provider string
+	Statsd   Statsd
+}
+
+// Statsd provides the configuration required to emit statsd metrics from the orderer.
+type Statsd struct {
+	Network       string
+	Address       string
+	WriteInterval time.Duration
+	Prefix        string
 }
 
 // Defaults carries the default orderer configuration values.
@@ -175,8 +220,9 @@ var Defaults = TopLevel{
 			Enabled: false,
 			Address: "0.0.0.0:6060",
 		},
-		LogLevel:    "INFO",
-		LogFormat:   "%{color}%{time:2006-01-02 15:04:05.000 MST} [%{module}] %{shortfunc} -> %{level:.4s} %{id:03x}%{color:reset} %{message}",
+		Cluster: Cluster{
+			ReplicationMaxRetries: 12,
+		},
 		LocalMSPDir: "msp",
 		LocalMSPID:  "SampleOrg",
 		BCCSP:       bccsp.GetDefaultOpts(),
@@ -219,10 +265,19 @@ var Defaults = TopLevel{
 		TLS: TLS{
 			Enabled: false,
 		},
+		Topic: Topic{
+			ReplicationFactor: 3,
+		},
 	},
 	Debug: Debug{
 		BroadcastTraceDir: "",
 		DeliverTraceDir:   "",
+	},
+	Operations: Operations{
+		ListenAddress: "127.0.0.1:0",
+	},
+	Metrics: Metrics{
+		Provider: "disabled",
 	},
 }
 
@@ -251,7 +306,15 @@ func Load() (*TopLevel, error) {
 
 func (c *TopLevel) completeInitialization(configDir string) {
 	defer func() {
-		// Translate any paths
+		// Translate any paths for cluster TLS configuration if applicable
+		if c.General.Cluster.ClientPrivateKey != "" {
+			coreconfig.TranslatePathInPlace(configDir, &c.General.Cluster.ClientPrivateKey)
+		}
+		if c.General.Cluster.ClientCertificate != "" {
+			coreconfig.TranslatePathInPlace(configDir, &c.General.Cluster.ClientCertificate)
+		}
+		c.General.Cluster.RootCAs = translateCAs(configDir, c.General.Cluster.RootCAs)
+		// Translate any paths for general TLS configuration
 		c.General.TLS.RootCAs = translateCAs(configDir, c.General.TLS.RootCAs)
 		c.General.TLS.ClientRootCAs = translateCAs(configDir, c.General.TLS.ClientRootCAs)
 		coreconfig.TranslatePathInPlace(configDir, &c.General.TLS.PrivateKey)
@@ -273,13 +336,6 @@ func (c *TopLevel) completeInitialization(configDir string) {
 			logger.Infof("General.ListenPort unset, setting to %v", Defaults.General.ListenPort)
 			c.General.ListenPort = Defaults.General.ListenPort
 
-		case c.General.LogLevel == "":
-			logger.Infof("General.LogLevel unset, setting to %s", Defaults.General.LogLevel)
-			c.General.LogLevel = Defaults.General.LogLevel
-		case c.General.LogFormat == "":
-			logger.Infof("General.LogFormat unset, setting to %s", Defaults.General.LogFormat)
-			c.General.LogFormat = Defaults.General.LogFormat
-
 		case c.General.GenesisMethod == "":
 			c.General.GenesisMethod = Defaults.General.GenesisMethod
 		case c.General.GenesisFile == "":
@@ -288,6 +344,10 @@ func (c *TopLevel) completeInitialization(configDir string) {
 			c.General.GenesisProfile = Defaults.General.GenesisProfile
 		case c.General.SystemChannel == "":
 			c.General.SystemChannel = Defaults.General.SystemChannel
+		case c.General.Cluster.ReplicationMaxRetries == 0:
+			c.General.Cluster.ReplicationMaxRetries = 12
+		case c.General.Cluster.SendBufferSize == 0:
+			c.General.Cluster.SendBufferSize = 10
 
 		case c.Kafka.TLS.Enabled && c.Kafka.TLS.Certificate == "":
 			logger.Panicf("General.Kafka.TLS.Certificate must be set if General.Kafka.TLS.Enabled is set to true.")

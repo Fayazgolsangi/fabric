@@ -89,7 +89,7 @@ func CacheConfiguration() (err error) {
 	}
 
 	localAddress, localAddressError = getLocalAddress()
-	peerEndpoint, _ = getPeerEndpoint()
+	peerEndpoint, peerEndpointError = getPeerEndpoint()
 
 	configurationCached = true
 
@@ -167,6 +167,14 @@ func GetServerConfig() (comm.ServerConfig, error) {
 	}
 	// get the default keepalive options
 	serverConfig.KaOpts = comm.DefaultKeepaliveOptions
+	// check to see if interval is set for the env
+	if viper.IsSet("peer.keepalive.interval") {
+		serverConfig.KaOpts.ServerInterval = viper.GetDuration("peer.keepalive.interval")
+	}
+	// check to see if timeout is set for the env
+	if viper.IsSet("peer.keepalive.timeout") {
+		serverConfig.KaOpts.ServerTimeout = viper.GetDuration("peer.keepalive.timeout")
+	}
 	// check to see if minInterval is set for the env
 	if viper.IsSet("peer.keepalive.minInterval") {
 		serverConfig.KaOpts.ServerMinInterval = viper.GetDuration("peer.keepalive.minInterval")
@@ -194,7 +202,7 @@ func GetClientCertificate() (tls.Certificate, error) {
 	} else {
 		// use the TLS server keypair
 		keyPath = viper.GetString("peer.tls.key.file")
-		certPath = viper.GetString("peer.tls.key.file")
+		certPath = viper.GetString("peer.tls.cert.file")
 
 		if keyPath != "" || certPath != "" {
 			// need both keyPath and certPath to be set

@@ -31,7 +31,7 @@ import (
 	cutil "github.com/hyperledger/fabric/core/container/util"
 )
 
-var logger = flogging.MustGetLogger("util")
+var logger = flogging.MustGetLogger("chaincode.platform.util")
 
 //ComputeHash computes contents hash based on previous hash
 func ComputeHash(contents []byte, hash []byte) []byte {
@@ -230,15 +230,18 @@ func DockerBuild(opts DockerBuildOptions) error {
 		cw.Close()
 		return fmt.Errorf("Error waiting for container to complete: %s", err)
 	}
+
+	// Wait for stream copying to complete before accessing stdout.
 	cw.Close()
+	if err := cw.Wait(); err != nil {
+		logger.Errorf("attach wait failed: %s", err)
+	}
 
 	if retval > 0 {
-		// Wait for stream copying to complete before getting output
-		if err := cw.Wait(); err != nil {
-			logger.Errorf("attach wait failed: %s", err)
-		}
 		return fmt.Errorf("Error returned from build: %d \"%s\"", retval, stdout.String())
 	}
+
+	logger.Debugf("Build output is %s", stdout.String())
 
 	//-----------------------------------------------------------------------------------
 	// Finally, download the result

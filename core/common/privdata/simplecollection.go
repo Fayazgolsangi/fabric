@@ -10,7 +10,6 @@ import (
 	"fmt"
 
 	"github.com/golang/protobuf/proto"
-	"github.com/hyperledger/fabric/common/cauthdsl"
 	"github.com/hyperledger/fabric/common/policies"
 	"github.com/hyperledger/fabric/msp"
 	"github.com/hyperledger/fabric/protos/common"
@@ -47,6 +46,8 @@ func (sc *SimpleCollection) RequiredPeerCount() int {
 	return int(sc.conf.RequiredPeerCount)
 }
 
+// MaximumPeerCount returns the maximum number of peers
+// to which the private data will be sent
 func (sc *SimpleCollection) MaximumPeerCount() int {
 	return int(sc.conf.MaximumPeerCount)
 }
@@ -60,6 +61,18 @@ func (sc *SimpleCollection) AccessFilter() Filter {
 		}
 		return true
 	}
+}
+
+// IsMemberOnlyRead returns whether only collection member
+// has the read permission
+func (sc *SimpleCollection) IsMemberOnlyRead() bool {
+	return sc.conf.MemberOnlyRead
+}
+
+// IsMemberOnlyWrite returns whether only collection member
+// has the write permission
+func (sc *SimpleCollection) IsMemberOnlyWrite() bool {
+	return sc.conf.MemberOnlyWrite
 }
 
 // Setup configures a simple collection object based on a given
@@ -121,21 +134,8 @@ func (sc *SimpleCollection) Setup(collectionConfig *common.StaticCollectionConfi
 // Setup configures a simple collection object based on a given
 // StaticCollectionConfig proto that has all the necessary information
 func (sc *SimpleCollection) setupAccessPolicy(collectionPolicyConfig *common.CollectionPolicyConfig, deserializer msp.IdentityDeserializer) error {
-	if collectionPolicyConfig == nil {
-		return errors.New("Collection config policy is nil")
-	}
-	accessPolicyEnvelope := collectionPolicyConfig.GetSignaturePolicy()
-	if accessPolicyEnvelope == nil {
-		return errors.New("Collection config access policy is nil")
-	}
-
-	// create access policy from the envelope
-	npp := cauthdsl.NewPolicyProvider(deserializer)
-	polBytes, err := proto.Marshal(accessPolicyEnvelope)
-	if err != nil {
-		return err
-	}
-	sc.accessPolicy, _, err = npp.NewPolicy(polBytes)
+	var err error
+	sc.accessPolicy, err = getPolicy(collectionPolicyConfig, deserializer)
 	return err
 }
 

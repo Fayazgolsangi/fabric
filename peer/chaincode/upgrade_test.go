@@ -9,34 +9,16 @@ package chaincode
 import (
 	"errors"
 	"fmt"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/hyperledger/fabric/msp/mgmt/testtools"
 	"github.com/hyperledger/fabric/peer/common"
 	pb "github.com/hyperledger/fabric/protos/peer"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 )
 
-var once sync.Once
-
-// InitMSP init MSP
-func InitMSP() {
-	once.Do(initMSP)
-}
-
-func initMSP() {
-	err := msptesttools.LoadMSPSetupForTesting()
-	if err != nil {
-		panic(fmt.Errorf("Fatal error when reading MSP config: %s\n", err))
-	}
-}
-
 func TestUpgradeCmd(t *testing.T) {
-	InitMSP()
-
 	signer, err := common.GetDefaultSigner()
 	if err != nil {
 		t.Fatalf("Get default signer error: %v", err)
@@ -60,13 +42,13 @@ func TestUpgradeCmd(t *testing.T) {
 	cmd := upgradeCmd(mockCF)
 	addFlags(cmd)
 
-	args := []string{"-n", "example02", "-p", "github.com/hyperledger/fabric/examples/chaincode/go/example02/cmd",
+	args := []string{"-n", "mychaincode", "-p", "mychaincodepath",
 		"-v", "anotherversion", "-c", "{\"Function\":\"init\",\"Args\": [\"param\",\"1\"]}"}
 	cmd.SetArgs(args)
 	err = cmd.Execute()
 	assert.Error(t, err, "'peer chaincode upgrade' command should have failed without -C flag")
 
-	args = []string{"-C", "mychannel", "-n", "example02", "-p", "github.com/hyperledger/fabric/examples/chaincode/go/example02/cmd",
+	args = []string{"-C", "mychannel", "-n", "mychaincode", "-p", "mychaincodepath",
 		"-v", "anotherversion", "-c", "{\"Function\":\"init\",\"Args\": [\"param\",\"1\"]}"}
 	cmd.SetArgs(args)
 	err = cmd.Execute()
@@ -74,8 +56,6 @@ func TestUpgradeCmd(t *testing.T) {
 }
 
 func TestUpgradeCmdEndorseFail(t *testing.T) {
-	InitMSP()
-
 	signer, err := common.GetDefaultSigner()
 	if err != nil {
 		t.Fatalf("Get default signer error: %v", err)
@@ -96,7 +76,7 @@ func TestUpgradeCmdEndorseFail(t *testing.T) {
 	cmd := upgradeCmd(mockCF)
 	addFlags(cmd)
 
-	args := []string{"-C", "mychannel", "-n", "example02", "-p", "github.com/hyperledger/fabric/examples/chaincode/go/example02/cmd",
+	args := []string{"-C", "mychannel", "-n", "mychaincode", "-p", "mychaincodepath",
 		"-v", "anotherversion", "-c", "{\"Function\":\"init\",\"Args\": [\"param\",\"1\"]}"}
 	cmd.SetArgs(args)
 
@@ -111,8 +91,6 @@ func TestUpgradeCmdEndorseFail(t *testing.T) {
 }
 
 func TestUpgradeCmdSendTXFail(t *testing.T) {
-	InitMSP()
-
 	signer, err := common.GetDefaultSigner()
 	if err != nil {
 		t.Fatalf("Get default signer error: %v", err)
@@ -134,7 +112,7 @@ func TestUpgradeCmdSendTXFail(t *testing.T) {
 	cmd := upgradeCmd(mockCF)
 	addFlags(cmd)
 
-	args := []string{"-C", "mychannel", "-n", "example02", "-p", "github.com/hyperledger/fabric/examples/chaincode/go/example02/cmd", "-v", "anotherversion", "-c", "{\"Function\":\"init\",\"Args\": [\"param\",\"1\"]}"}
+	args := []string{"-C", "mychannel", "-n", "mychaincode", "-p", "mychaincodepath", "-v", "anotherversion", "-c", "{\"Function\":\"init\",\"Args\": [\"param\",\"1\"]}"}
 	cmd.SetArgs(args)
 
 	expectErrMsg := sendErr.Error()
@@ -164,12 +142,11 @@ func TestUpgradeCmdWithNilCF(t *testing.T) {
 	}()
 
 	channelID = ""
-	InitMSP()
 
 	cmd := upgradeCmd(nil)
 	addFlags(cmd)
 
-	args := []string{"-C", "mychannel", "-n", "example02", "-p", "github.com/hyperledger/fabric/examples/chaincode/go/example02/cmd",
+	args := []string{"-C", "mychannel", "-n", "mychaincode", "-p", "mychaincodepath",
 		"-v", "anotherversion", "-c", "{\"Function\":\"init\",\"Args\": [\"param\",\"1\"]}"}
 	cmd.SetArgs(args)
 	err := cmd.Execute()

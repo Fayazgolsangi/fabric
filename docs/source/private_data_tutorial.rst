@@ -9,7 +9,7 @@ of organizations.
 The information in this tutorial assumes knowledge of private data
 stores and their use cases. For more information, check out :doc:`private-data/private-data`.
 
-The tutorial will take you through the following steps for practice defining,
+The tutorial will take you through the following steps to practice defining,
 configuring and using private data with Fabric:
 
 #. :ref:`pd-build-json`
@@ -46,7 +46,7 @@ data, and how long the private data is persisted in the private database. Later,
 we will demonstrate how chaincode APIs ``PutPrivateData`` and ``GetPrivateData``
 are used to map the collection to the private data being secured.
 
-A collection definition is composed of five properties:
+A collection definition is composed of the following properties:
 
 .. _blockToLive:
 
@@ -69,6 +69,10 @@ A collection definition is composed of five properties:
   To keep private data indefinitely, that is, to never purge private data, set
   the ``blockToLive`` property to ``0``.
 
+- ``memberOnlyRead``: a value of ``true`` indicates that peers automatically
+  enforce that only clients belonging to one of the collection member organizations
+  are allowed read access to private data.
+
 To illustrate usage of private data, the marbles private data example contains
 two private data collection definitions: ``collectionMarbles``
 and ``collectionMarblePrivateDetails``. The ``policy`` property in the
@@ -80,7 +84,7 @@ have the private data in their private database.
 For more information on building a policy definition refer to the :doc:`endorsement-policies`
 topic.
 
-.. code-block:: JSON
+.. code:: json
 
  // collections_config.json
 
@@ -90,7 +94,8 @@ topic.
         "policy": "OR('Org1MSP.member', 'Org2MSP.member')",
         "requiredPeerCount": 0,
         "maxPeerCount": 3,
-        "blockToLive":1000000
+        "blockToLive":1000000,
+        "memberOnlyRead": true
    },
 
    {
@@ -98,7 +103,8 @@ topic.
         "policy": "OR('Org1MSP.member')",
         "requiredPeerCount": 0,
         "maxPeerCount": 3,
-        "blockToLive":3
+        "blockToLive":3,
+        "memberOnlyRead": true
    }
  ]
 
@@ -137,10 +143,10 @@ be accessed.
    Price      int    `json:"price"`
  }
 
- Specifically access to the private data will be restricted as follows:
+Specifically access to the private data will be restricted as follows:
 
- - ``name, color, size, and owner`` will be visible to all members of the channel (Org1 and Org2)
- - ``price`` only visible to members of Org1
+- ``name, color, size, and owner`` will be visible to all members of the channel (Org1 and Org2)
+- ``price`` only visible to members of Org1
 
 Thus two different sets of private data are defined in the marbles private data
 sample. The mapping of this data to the collection policy which restricts its
@@ -191,40 +197,46 @@ For example, in the following snippet of the ``initMarble`` function,
 
 .. code-block:: GO
 
-  // ==== Create marble object and marshal to JSON ====
-	objectType := "marble"
-	marble := &marble{objectType, marbleName, color, size, owner}
+  // ==== Create marble object, marshal to JSON, and save to state ====
+	marble := &marble{
+		ObjectType: "marble",
+		Name:       marbleInput.Name,
+		Color:      marbleInput.Color,
+		Size:       marbleInput.Size,
+		Owner:      marbleInput.Owner,
+	}
 	marbleJSONasBytes, err := json.Marshal(marble)
 	if err != nil {
 		return shim.Error(err.Error())
 	}
-	//Alternatively, build the marble json string manually if you don't want to use struct marshalling
-	//marbleJSONasString := `{"docType":"Marble",  "name": "` + marbleName + `", "color": "` + color + `", "size": ` + strconv.Itoa(size) + `, "owner": "` + owner + `"}`
-	//marbleJSONasBytes := []byte(str)
 
 	// === Save marble to state ===
-	err = stub.PutPrivateData("collectionMarbles", marbleName, marbleJSONasBytes)
+	err = stub.PutPrivateData("collectionMarbles", marbleInput.Name, marbleJSONasBytes)
 	if err != nil {
 		return shim.Error(err.Error())
 	}
 
-	// ==== Save marble private details ====
-	objectType = "marblePrivateDetails"
-	marblePrivateDetails := &marblePrivateDetails{objectType, marbleName, price}
+	// ==== Create marble private details object with price, marshal to JSON, and save to state ====
+	marblePrivateDetails := &marblePrivateDetails{
+		ObjectType: "marblePrivateDetails",
+		Name:       marbleInput.Name,
+		Price:      marbleInput.Price,
+	}
 	marblePrivateDetailsBytes, err := json.Marshal(marblePrivateDetails)
 	if err != nil {
 		return shim.Error(err.Error())
 	}
-	err = stub.PutPrivateData("collectionMarblePrivateDetails", marbleName, marblePrivateDetailsBytes)
+	err = stub.PutPrivateData("collectionMarblePrivateDetails", marbleInput.Name, marblePrivateDetailsBytes)
 	if err != nil {
 		return shim.Error(err.Error())
- }
+	}
+
 
 To summarize, the policy definition above for our ``collection.json``
-allows all peers in Org1 and Org2 can store and transact (endorse, commit,
-query) with the marbles private data ``name, color, size, owner`` in their
-private database. But only peers in Org1 can can store and transact with
-the ``price`` private data in an additional private database.
+allows all peers in Org1 and Org2 to store and transact
+with the marbles private data ``name, color, size, owner`` in their
+private database. But only peers in Org1 can store and transact with
+the ``price`` private data in its private database.
 
 As an additional data privacy benefit, since a collection is being used,
 only the private data hashes go through orderer, not the private data itself,
@@ -250,6 +262,15 @@ data.
     cd fabric-samples/first-network
     ./byfn.sh down
 
+
+ If you've already run through this tutorial, you'll also want to delete the
+ underlying docker containers for the marbles private data chaincode. Let's
+ run the following commands to clean up previous environments:
+
+ .. code:: bash
+
+    docker rm -f $(docker ps -a | awk '($2 ~ /dev-peer.*.marblesp.*/) {print $1}')
+    docker rmi -f $(docker images | awk '($1 ~ /dev-peer.*.marblesp.*/) {print $3}')
 
  Start up the BYFN network with CouchDB by running the following command:
 
@@ -312,7 +333,7 @@ Use the `peer chaincode install <http://hyperledger-fabric.readthedocs.io/en/mas
 
     .. code:: bash
 
-       peer chaincode install -n marblesp -v 1.0 -p github.com/chaincode/marbles02_private/go/
+       peer chaincode install -n marblesp -v 1.0 -p github.com/hyperledger/fabric-samples/chaincode/marbles02_private/go/
 
     When it is complete you should see something similar to:
 
@@ -327,7 +348,7 @@ Use the `peer chaincode install <http://hyperledger-fabric.readthedocs.io/en/mas
     .. code:: bash
 
        export CORE_PEER_ADDRESS=peer1.org1.example.com:7051
-       peer chaincode install -n marblesp -v 1.0 -p github.com/chaincode/marbles02_private/go/
+       peer chaincode install -n marblesp -v 1.0 -p github.com/hyperledger/fabric-samples/chaincode/marbles02_private/go/
 
  3. Use the CLI to switch to Org2. Copy and paste the following block of
     commands as a group into the peer container and run them all at once.
@@ -344,14 +365,14 @@ Use the `peer chaincode install <http://hyperledger-fabric.readthedocs.io/en/mas
     .. code:: bash
 
        export CORE_PEER_ADDRESS=peer0.org2.example.com:7051
-       peer chaincode install -n marblesp -v 1.0 -p github.com/chaincode/marbles02_private/go/
+       peer chaincode install -n marblesp -v 1.0 -p github.com/hyperledger/fabric-samples/chaincode/marbles02_private/go/
 
  5. Switch the active peer to the second peer in org2 and install the chaincode:
 
     .. code:: bash
 
        export CORE_PEER_ADDRESS=peer1.org2.example.com:7051
-       peer chaincode install -n marblesp -v 1.0 -p github.com/chaincode/marbles02_private/go/
+       peer chaincode install -n marblesp -v 1.0 -p github.com/hyperledger/fabric-samples/chaincode/marbles02_private/go/
 
 Instantiate the chaincode on the channel
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -370,11 +391,11 @@ example.
  .. code:: bash
 
    export ORDERER_CA=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/ordererOrganizations/example.com/orderers/orderer.example.com/msp/tlscacerts/tlsca.example.com-cert.pem
-   peer chaincode instantiate -o orderer.example.com:7050 --tls --cafile $ORDERER_CA -C mychannel -n marblesp -v 1.0 -c '{"Args":["init"]}' -P "OR('Org1MSP.member','Org2MSP.member')" --collections-config  $GOPATH/src/github.com/chaincode/marbles02_private/collections_config.json
+   peer chaincode instantiate -o orderer.example.com:7050 --tls --cafile $ORDERER_CA -C mychannel -n marblesp -v 1.0 -c '{"Args":["init"]}' -P "OR('Org1MSP.member','Org2MSP.member')" --collections-config  $GOPATH/src/github.com/hyperledger/fabric-samples/chaincode/marbles02_private/collections_config.json
 
  .. note:: When specifying the value of the ``--collections-config`` flag, you will
            need to specify the fully qualified path to the collections_config.json file.
-           For example: ``--collections-config  $GOPATH/src/github.com/chaincode/marbles02_private/collections_config.json``
+           For example: ``--collections-config  $GOPATH/src/github.com/hyperledger/fabric-samples/chaincode/marbles02_private/collections_config.json``
 
  When the instantiation completes successfully you should see something similar to:
 
@@ -402,18 +423,25 @@ submit a request to add a marble:
     export CORE_PEER_LOCALMSPID=Org1MSP
     export CORE_PEER_TLS_ROOTCERT_FILE=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/org1.example.com/peers/peer0.org1.example.com/tls/ca.crt
     export CORE_PEER_MSPCONFIGPATH=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/org1.example.com/users/Admin@org1.example.com/msp
-    export PEER0_ORG1_CA=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/org2.example.com/peers/peer0.org1.example.com/tls/ca.crt
+    export PEER0_ORG1_CA=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/org1.example.com/peers/peer0.org1.example.com/tls/ca.crt
 
  Invoke the marbles ``initMarble`` function which
  creates a marble with private data ---  name ``marble1`` owned by ``tom`` with a color
  ``blue``, size ``35`` and price of ``99``. Recall that private data **price**
- will be stored separately from the public data **name, owner, color, size**.
+ will be stored separately from the private data **name, owner, color, size**.
  For this reason, the ``initMarble`` function calls the ``PutPrivateData()`` API
- twice to persist the private data, once using each collection.
+ twice to persist the private data, once for each collection. Also note that
+ the private data is passed using the ``--transient`` flag. Inputs passed
+ as transient data will not be persisted in the transaction in order to keep
+ the data private. Transient data is passed as binary data and therefore when
+ using CLI it must be base64 encoded. We use an environment variable
+ to capture the base64 encoded value, and use ``tr`` command to strip off the
+ problematic newline characters that linux base64 command adds.
 
  .. code:: bash
 
-   peer chaincode invoke -o orderer.example.com:7050 --tls --cafile /opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/ordererOrganizations/example.com/orderers/orderer.example.com/msp/tlscacerts/tlsca.example.com-cert.pem -C mychannel -n marblesp -c '{"Args":["initMarble","marble1","blue","35","tom","99"]}'
+   export MARBLE=$(echo -n "{\"name\":\"marble1\",\"color\":\"blue\",\"size\":35,\"owner\":\"tom\",\"price\":99}" | base64 | tr -d \\n)
+   peer chaincode invoke -o orderer.example.com:7050 --tls --cafile /opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/ordererOrganizations/example.com/orderers/orderer.example.com/msp/tlscacerts/tlsca.example.com-cert.pem -C mychannel -n marblesp -c '{"Args":["initMarble"]}'  --transient "{\"marble\":\"$MARBLE\"}"
 
  You should see results similar to:
 
@@ -432,66 +460,68 @@ database. As an authorized peer in Org1, we will query both sets of private data
 The first ``query`` command calls the ``readMarble`` function which passes
 ``collectionMarbles`` as an argument.
 
-.. code:: GO
+.. code-block:: GO
 
    // ===============================================
    // readMarble - read a marble from chaincode state
    // ===============================================
 
    func (t *SimpleChaincode) readMarble(stub shim.ChaincodeStubInterface, args []string) pb.Response {
-	    var name, jsonResp string
-      var err error
-      if len(args) != 1 {
-	 	    return shim.Error("Incorrect number of arguments. Expecting name of the marble to query")
-	     }
+   	var name, jsonResp string
+   	var err error
+   	if len(args) != 1 {
+   		return shim.Error("Incorrect number of arguments. Expecting name of the marble to query")
+   	}
 
-  name = args[0]
-   valAsbytes, err := stub.GetPrivateData("collectionMarbles", name) //get the marble from chaincode state
+   	name = args[0]
+   	valAsbytes, err := stub.GetPrivateData("collectionMarbles", name) //get the marble from chaincode state
 
-	  if err != nil {
-       jsonResp = "{\"Error\":\"Failed to get state for " + name + "\"}"
-       return shim.Error(jsonResp)
-     } else if valAsbytes == nil {
-       jsonResp = "{\"Error\":\"Marble does not exist: " + name + "\"}"
-       return shim.Error(jsonResp)
-     }
+   	if err != nil {
+   		jsonResp = "{\"Error\":\"Failed to get state for " + name + "\"}"
+   		return shim.Error(jsonResp)
+   	} else if valAsbytes == nil {
+   		jsonResp = "{\"Error\":\"Marble does not exist: " + name + "\"}"
+   		return shim.Error(jsonResp)
+   	}
 
-   return shim.Success(valAsbytes)
+   	return shim.Success(valAsbytes)
    }
 
-The second ``query`` command calls the ``readMarblereadMarblePrivateDetails``
+The second ``query`` command calls the ``readMarblePrivateDetails``
 function which passes ``collectionMarblePrivateDetails`` as an argument.
 
-.. code:: GO
+.. code-block:: GO
 
    // ===============================================
-   // readMarblereadMarblePrivateDetails - read a marble private details from chaincode state
+   // readMarblePrivateDetails - read a marble private details from chaincode state
    // ===============================================
 
    func (t *SimpleChaincode) readMarblePrivateDetails(stub shim.ChaincodeStubInterface, args []string) pb.Response {
-   var name, jsonResp string
-   var err error
+   	var name, jsonResp string
+   	var err error
 
-   if len(args) != 1 {
-     return shim.Error("Incorrect number of arguments. Expecting name of the marble to query")
-    }
+   	if len(args) != 1 {
+   		return shim.Error("Incorrect number of arguments. Expecting name of the marble to query")
+   	}
 
-   name = args[0]
-   valAsbytes, err := stub.GetPrivateData("collectionMarblePrivateDetails", name) //get the marble private details from chaincode state
+   	name = args[0]
+   	valAsbytes, err := stub.GetPrivateData("collectionMarblePrivateDetails", name) //get the marble private details from chaincode state
 
-   if err != nil {
-     jsonResp = "{\"Error\":\"Failed to get private details for " + name + ": " + err.Error() + "\"}"
-     return shim.Error(jsonResp)
-    } else if valAsbytes == nil {
-     jsonResp = "{\"Error\":\"Marble private details does not exist: " + name + "\"}"
-     return shim.Error(jsonResp)
-    }
-   return shim.Success(valAsbytes)
+   	if err != nil {
+   		jsonResp = "{\"Error\":\"Failed to get private details for " + name + ": " + err.Error() + "\"}"
+   		return shim.Error(jsonResp)
+   	} else if valAsbytes == nil {
+   		jsonResp = "{\"Error\":\"Marble private details does not exist: " + name + "\"}"
+   		return shim.Error(jsonResp)
+   	}
+   	return shim.Success(valAsbytes)
    }
 
 Now :guilabel:`Try it yourself`
 
  Query for the ``name, color, size and owner`` private data of ``marble1`` as a member of Org1.
+ Note that since queries do not get recorded on the ledger, there is no need to pass
+ the marble name as a transient input.
 
  .. code:: bash
 
@@ -529,7 +559,7 @@ Switch to a peer in Org2
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
 From inside the docker container, run the following commands to switch to
-the peer which is unauthorized to the marbles ``price`` private data.
+the peer which is unauthorized to access the marbles ``price`` private data.
 
  :guilabel:`Try it yourself`
 
@@ -582,7 +612,7 @@ the public state but will not have the private state.
     transaction ID: b04adebbf165ddc90b4ab897171e1daa7d360079ac18e65fa15d84ddfebfae90:
     Private data matching public hash version is not available. Public hash
     version = &version.Height{BlockNum:0x6, TxNum:0x0}, Private data version =
-    (*version.Height)(nil)"}"
+    (*version.Height)(nil)"}
 
 Members of Org2 will only be able to see the public hash of the private data.
 
@@ -628,7 +658,7 @@ price private data is purged.
     export CORE_PEER_LOCALMSPID=Org1MSP
     export CORE_PEER_TLS_ROOTCERT_FILE=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/org1.example.com/peers/peer0.org1.example.com/tls/ca.crt
     export CORE_PEER_MSPCONFIGPATH=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/org1.example.com/users/Admin@org1.example.com/msp
-    export PEER0_ORG1_CA=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/org2.example.com/peers/peer0.org1.example.com/tls/ca.crt
+    export PEER0_ORG1_CA=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/org1.example.com/peers/peer0.org1.example.com/tls/ca.crt
 
  Open a new terminal window and view the private data logs for this peer by
  running the following command:
@@ -664,14 +694,15 @@ price private data is purged.
 
     {"docType":"marblePrivateDetails","name":"marble1","price":99}
 
- The ``price`` data is still on the private data ledger.
+ The ``price`` data is still in the private data ledger.
 
  Create a new **marble2** by issuing the following command. This transaction
  creates a new block on the chain.
 
  .. code:: bash
 
-    peer chaincode invoke -o orderer.example.com:7050 --tls --cafile /opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/ordererOrganizations/example.com/orderers/orderer.example.com/msp/tlscacerts/tlsca.example.com-cert.pem -C mychannel -n marblesp -c '{"Args":["initMarble","marble2","blue","35","tom","99"]}'
+    export MARBLE=$(echo -n "{\"name\":\"marble2\",\"color\":\"blue\",\"size\":35,\"owner\":\"tom\",\"price\":99}" | base64 | tr -d \\n)
+    peer chaincode invoke -o orderer.example.com:7050 --tls --cafile /opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/ordererOrganizations/example.com/orderers/orderer.example.com/msp/tlscacerts/tlsca.example.com-cert.pem -C mychannel -n marblesp -c '{"Args":["initMarble"]}' --transient "{\"marble\":\"$MARBLE\"}"
 
  Switch back to the Terminal window and view the private data logs for this peer
  again. You should see the block height increase by 1.
@@ -699,7 +730,8 @@ price private data is purged.
 
  .. code:: bash
 
-    peer chaincode invoke -o orderer.example.com:7050 --tls --cafile /opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/ordererOrganizations/example.com/orderers/orderer.example.com/msp/tlscacerts/tlsca.example.com-cert.pem -C mychannel -n marblesp -c '{"Args":["transferMarble","marble2","joe"]}'
+    export MARBLE_OWNER=$(echo -n "{\"name\":\"marble2\",\"owner\":\"joe\"}" | base64 | tr -d \\n)
+    peer chaincode invoke -o orderer.example.com:7050 --tls --cafile /opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/ordererOrganizations/example.com/orderers/orderer.example.com/msp/tlscacerts/tlsca.example.com-cert.pem -C mychannel -n marblesp -c '{"Args":["transferMarble"]}' --transient "{\"marble_owner\":\"$MARBLE_OWNER\"}"
 
  Switch back to the Terminal window and view the private data logs for this peer
  again. You should see the block height increase by 1.
@@ -726,7 +758,8 @@ price private data is purged.
 
  .. code:: bash
 
-    peer chaincode invoke -o orderer.example.com:7050 --tls --cafile /opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/ordererOrganizations/example.com/orderers/orderer.example.com/msp/tlscacerts/tlsca.example.com-cert.pem -C mychannel -n marblesp -c '{"Args":["transferMarble","marble2","tom"]}'
+    export MARBLE_OWNER=$(echo -n "{\"name\":\"marble2\",\"owner\":\"tom\"}" | base64 | tr -d \\n)
+    peer chaincode invoke -o orderer.example.com:7050 --tls --cafile /opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/ordererOrganizations/example.com/orderers/orderer.example.com/msp/tlscacerts/tlsca.example.com-cert.pem -C mychannel -n marblesp -c '{"Args":["transferMarble"]}' --transient "{\"marble_owner\":\"$MARBLE_OWNER\"}"
 
  Switch back to the Terminal window and view the private data logs for this peer
  again. You should see the block height increase by 1.
@@ -754,7 +787,8 @@ price private data is purged.
 
  .. code:: bash
 
-    peer chaincode invoke -o orderer.example.com:7050 --tls --cafile /opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/ordererOrganizations/example.com/orderers/orderer.example.com/msp/tlscacerts/tlsca.example.com-cert.pem -C mychannel -n marblesp -c '{"Args":["transferMarble","marble2","jerry"]}'
+    export MARBLE_OWNER=$(echo -n "{\"name\":\"marble2\",\"owner\":\"jerry\"}" | base64 | tr -d \\n)
+    peer chaincode invoke -o orderer.example.com:7050 --tls --cafile /opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/ordererOrganizations/example.com/orderers/orderer.example.com/msp/tlscacerts/tlsca.example.com-cert.pem -C mychannel -n marblesp -c '{"Args":["transferMarble"]}' --transient "{\"marble_owner\":\"$MARBLE_OWNER\"}"
 
  Switch back to the Terminal window and view the private data logs for this peer
  again. You should see the block height increase by 1.

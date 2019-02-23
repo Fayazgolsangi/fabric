@@ -86,6 +86,12 @@ const (
 	// GETINSTALLEDCHAINCODESALIAS gets the installed chaincodes on a peer
 	GETINSTALLEDCHAINCODESALIAS = "GetInstalledChaincodes"
 
+	// GETCOLLECTIONSCONFIG gets the collections config for a chaincode
+	GETCOLLECTIONSCONFIG = "GetCollectionsConfig"
+
+	// GETCOLLECTIONSCONFIGALIAS gets the collections config for a chaincode
+	GETCOLLECTIONSCONFIGALIAS = "getcollectionsconfig"
+
 	allowedChaincodeName = "^[a-zA-Z0-9]+([-_][a-zA-Z0-9]+)*$"
 	allowedCharsVersion  = "[A-Za-z0-9_.+-]+"
 )
@@ -155,26 +161,20 @@ func (lscc *LifeCycleSysCC) InvokableExternal() bool   { return true }
 func (lscc *LifeCycleSysCC) InvokableCC2CC() bool      { return true }
 func (lscc *LifeCycleSysCC) Enabled() bool             { return true }
 
-func (lscc *LifeCycleSysCC) ChaincodeContainerInfo(channelID, ccName string) (*ccprovider.ChaincodeContainerInfo, error) {
-	qe, err := lscc.SCCProvider.GetQueryExecutorForLedger(channelID)
+func (lscc *LifeCycleSysCC) ChaincodeContainerInfo(chaincodeName string, qe ledger.SimpleQueryExecutor) (*ccprovider.ChaincodeContainerInfo, error) {
+	chaincodeDataBytes, err := qe.GetState("lscc", chaincodeName)
 	if err != nil {
-		return nil, errors.Wrapf(err, "could not retrieve QueryExecutor for channel %s", channelID)
-	}
-	defer qe.Done()
-
-	chaincodeDataBytes, err := qe.GetState("lscc", ccName)
-	if err != nil {
-		return nil, errors.Wrapf(err, "could not retrieve state for chaincode %s on channel %s", ccName, channelID)
+		return nil, errors.Wrapf(err, "could not retrieve state for chaincode %s", chaincodeName)
 	}
 
 	if chaincodeDataBytes == nil {
-		return nil, errors.Errorf("chaincode %s not found on channel %s", ccName, channelID)
+		return nil, errors.Errorf("chaincode %s not found", chaincodeName)
 	}
 
 	// Note, although it looks very tempting to replace the bulk of this function with
 	// the below 'ChaincodeDefinition' call, the 'getCCCode' call provides us security
 	// by side-effect, so we must leave it as is for now.
-	cds, _, err := lscc.getCCCode(ccName, chaincodeDataBytes)
+	cds, _, err := lscc.getCCCode(chaincodeName, chaincodeDataBytes)
 	if err != nil {
 		return nil, errors.Wrapf(err, "could not get chaincode code")
 	}
@@ -182,8 +182,8 @@ func (lscc *LifeCycleSysCC) ChaincodeContainerInfo(channelID, ccName string) (*c
 	return ccprovider.DeploymentSpecToChaincodeContainerInfo(cds), nil
 }
 
-func (lscc *LifeCycleSysCC) ChaincodeDefinition(chaincodeName string, txsim ledger.QueryExecutor) (ccprovider.ChaincodeDefinition, error) {
-	chaincodeDataBytes, err := txsim.GetState("lscc", chaincodeName)
+func (lscc *LifeCycleSysCC) ChaincodeDefinition(chaincodeName string, qe ledger.SimpleQueryExecutor) (ccprovider.ChaincodeDefinition, error) {
+	chaincodeDataBytes, err := qe.GetState("lscc", chaincodeName)
 	if err != nil {
 		return nil, errors.Wrapf(err, "could not retrieve state for chaincode %s", chaincodeName)
 	}
@@ -199,6 +199,42 @@ func (lscc *LifeCycleSysCC) ChaincodeDefinition(chaincodeName string, txsim ledg
 	}
 
 	return chaincodeData, nil
+}
+
+// ValidationInfo returns name&arguments of the validation plugin for the supplied chaincode.
+// The function returns two types of errors, unexpected errors and validation errors. The
+// reason for this is that this function is to be called from the validation code, which
+// needs to tell apart the two types of error to halt processing on the channel if the
+// unexpected error is not nil and mark the transaction as invalid if the validation error
+// is not nil.
+func (lscc *LifeCycleSysCC) ValidationInfo(channelID, chaincodeName string, qe ledger.SimpleQueryExecutor) (plugin string, args []byte, unexpectedErr error, validationErr error) {
+	chaincodeDataBytes, err := qe.GetState("lscc", chaincodeName)
+	if err != nil {
+		// failure to access the ledger is clearly an unexpected
+		// error since we expect the ledger to be reachable
+		unexpectedErr = errors.Wrapf(err, "could not retrieve state for chaincode %s", chaincodeName)
+		return
+	}
+
+	if chaincodeDataBytes == nil {
+		// no chaincode definition is a validation error since
+		// we're trying to retrieve chaincode definitions for a non-existent chaincode
+		validationErr = errors.Errorf("chaincode %s not found", chaincodeName)
+		return
+	}
+
+	chaincodeData := &ccprovider.ChaincodeData{}
+	err = proto.Unmarshal(chaincodeDataBytes, chaincodeData)
+	if err != nil {
+		// this kind of data corruption is unexpected since our code
+		// always marshals ChaincodeData into these keys
+		unexpectedErr = errors.Wrapf(err, "chaincode %s has bad definition", chaincodeName)
+		return
+	}
+
+	plugin = chaincodeData.Vscc
+	args = chaincodeData.Policy
+	return
 }
 
 //create the chaincode on the given chain
@@ -334,6 +370,19 @@ func (lscc *LifeCycleSysCC) putChaincodeCollectionData(stub shim.ChaincodeStubIn
 	}
 
 	return nil
+}
+
+// getChaincodeCollectionData retrieve collections config.
+func (lscc *LifeCycleSysCC) getChaincodeCollectionData(stub shim.ChaincodeStubInterface, chaincodeName string) pb.Response {
+	key := privdata.BuildCollectionKVSKey(chaincodeName)
+	collectionsConfigBytes, err := stub.GetState(key)
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	if len(collectionsConfigBytes) == 0 {
+		return shim.Error(fmt.Sprintf("collections config not defined for chaincode %s", chaincodeName))
+	}
+	return shim.Success(collectionsConfigBytes)
 }
 
 //checks for existence of chaincode on the given channel
@@ -580,7 +629,7 @@ func (lscc *LifeCycleSysCC) executeInstall(stub shim.ChaincodeStubInterface, ccb
 	// any channel's statedb where the chaincode is already instantiated
 	// Note - this step is done prior to PutChaincodeToLocalStorage() since this step is idempotent and harmless until endorsements start,
 	// that is, if there are errors deploying the indexes the chaincode install can safely be re-attempted later.
-	err = cceventmgmt.GetMgr().HandleChaincodeInstall(chaincodeDefinition, statedbArtifactsTar, lscc.SCCProvider)
+	err = cceventmgmt.GetMgr().HandleChaincodeInstall(chaincodeDefinition, statedbArtifactsTar)
 	defer func() {
 		cceventmgmt.GetMgr().ChaincodeInstallDone(err == nil)
 	}()
@@ -803,8 +852,8 @@ func (lscc *LifeCycleSysCC) Invoke(stub shim.ChaincodeStubInterface) pb.Response
 			return shim.Error(InvalidArgsLenErr(len(args)).Error())
 		}
 
-		// 2. check local MSP Admins policy
-		if err = lscc.PolicyChecker.CheckPolicyNoChannel(mgmt.Admins, sp); err != nil {
+		// 2. check install policy
+		if err = lscc.ACLProvider.CheckACL(resources.Lscc_Install, "", sp); err != nil {
 			return shim.Error(fmt.Sprintf("access denied for [%s]: %s", function, err))
 		}
 
@@ -836,15 +885,18 @@ func (lscc *LifeCycleSysCC) Invoke(stub shim.ChaincodeStubInterface) pb.Response
 		}
 
 		// the maximum number of arguments depends on the capability of the channel
-		if (!ac.Capabilities().PrivateChannelData() && len(args) > 6) ||
-			(ac.Capabilities().PrivateChannelData() && len(args) > 7) {
+		if !ac.Capabilities().PrivateChannelData() && len(args) > 6 {
+			return shim.Error(PrivateChannelDataNotAvailable("").Error())
+		}
+		if ac.Capabilities().PrivateChannelData() && len(args) > 7 {
 			return shim.Error(InvalidArgsLenErr(len(args)).Error())
 		}
 
 		depSpec := args[2]
-		cds, err := utils.GetChaincodeDeploymentSpec(depSpec, lscc.PlatformRegistry)
+		cds := &pb.ChaincodeDeploymentSpec{}
+		err := proto.Unmarshal(depSpec, cds)
 		if err != nil {
-			return shim.Error(err.Error())
+			return shim.Error(fmt.Sprintf("error unmarshaling ChaincodeDeploymentSpec: %s", err))
 		}
 
 		// optional arguments here (they can each be nil and may or may not be present)
@@ -954,12 +1006,26 @@ func (lscc *LifeCycleSysCC) Invoke(stub shim.ChaincodeStubInterface) pb.Response
 			return shim.Error(InvalidArgsLenErr(len(args)).Error())
 		}
 
-		// 2. check local MSP Admins policy
-		if err = lscc.PolicyChecker.CheckPolicyNoChannel(mgmt.Admins, sp); err != nil {
+		// 2. check Lscc_GetInstalledChaincodes policy
+		if err = lscc.ACLProvider.CheckACL(resources.Lscc_GetInstalledChaincodes, "", sp); err != nil {
 			return shim.Error(fmt.Sprintf("access denied for [%s]: %s", function, err))
 		}
 
 		return lscc.getInstalledChaincodes()
+	case GETCOLLECTIONSCONFIG, GETCOLLECTIONSCONFIGALIAS:
+		if len(args) != 2 {
+			return shim.Error(InvalidArgsLenErr(len(args)).Error())
+		}
+
+		chaincodeName := string(args[1])
+
+		logger.Debugf("GetCollectionsConfig, chaincodeName:%s, start to check ACL for current identity policy", chaincodeName)
+		if err = lscc.ACLProvider.CheckACL(resources.Lscc_GetCollectionsConfig, stub.GetChannelID(), sp); err != nil {
+			logger.Debugf("ACL Check Failed for channel:%s, chaincode:%s", stub.GetChannelID(), chaincodeName)
+			return shim.Error(fmt.Sprintf("access denied for [%s]: %s", function, err))
+		}
+
+		return lscc.getChaincodeCollectionData(stub, chaincodeName)
 	}
 
 	return shim.Error(InvalidFunctionErr(function).Error())

@@ -8,7 +8,6 @@ package node
 
 import (
 	"fmt"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"os"
@@ -22,14 +21,21 @@ import (
 	"github.com/hyperledger/fabric/common/crypto/tlsgen"
 	"github.com/hyperledger/fabric/common/deliver"
 	"github.com/hyperledger/fabric/common/flogging"
+	floggingmetrics "github.com/hyperledger/fabric/common/flogging/metrics"
+	"github.com/hyperledger/fabric/common/grpclogging"
+	"github.com/hyperledger/fabric/common/grpcmetrics"
 	"github.com/hyperledger/fabric/common/localmsp"
+	"github.com/hyperledger/fabric/common/metadata"
+	"github.com/hyperledger/fabric/common/metrics"
 	"github.com/hyperledger/fabric/common/policies"
 	"github.com/hyperledger/fabric/common/viperutil"
 	"github.com/hyperledger/fabric/core/aclmgmt"
+	"github.com/hyperledger/fabric/core/aclmgmt/resources"
 	"github.com/hyperledger/fabric/core/admin"
-	"github.com/hyperledger/fabric/core/cclifecycle"
+	cc "github.com/hyperledger/fabric/core/cclifecycle"
 	"github.com/hyperledger/fabric/core/chaincode"
 	"github.com/hyperledger/fabric/core/chaincode/accesscontrol"
+	"github.com/hyperledger/fabric/core/chaincode/lifecycle"
 	"github.com/hyperledger/fabric/core/chaincode/persistence"
 	"github.com/hyperledger/fabric/core/chaincode/platforms"
 	"github.com/hyperledger/fabric/core/chaincode/platforms/car"
@@ -37,19 +43,22 @@ import (
 	"github.com/hyperledger/fabric/core/chaincode/platforms/java"
 	"github.com/hyperledger/fabric/core/chaincode/platforms/node"
 	"github.com/hyperledger/fabric/core/comm"
-	"github.com/hyperledger/fabric/core/committer/txvalidator"
+	"github.com/hyperledger/fabric/core/committer/txvalidator/plugin"
 	"github.com/hyperledger/fabric/core/common/ccprovider"
+	"github.com/hyperledger/fabric/core/common/privdata"
 	"github.com/hyperledger/fabric/core/container"
 	"github.com/hyperledger/fabric/core/container/dockercontroller"
 	"github.com/hyperledger/fabric/core/container/inproccontroller"
+	"github.com/hyperledger/fabric/core/dispatcher"
 	"github.com/hyperledger/fabric/core/endorser"
 	authHandler "github.com/hyperledger/fabric/core/handlers/auth"
 	endorsement2 "github.com/hyperledger/fabric/core/handlers/endorsement/api"
 	endorsement3 "github.com/hyperledger/fabric/core/handlers/endorsement/api/identities"
 	"github.com/hyperledger/fabric/core/handlers/library"
-	"github.com/hyperledger/fabric/core/handlers/validation/api"
+	validation "github.com/hyperledger/fabric/core/handlers/validation/api"
 	"github.com/hyperledger/fabric/core/ledger/cceventmgmt"
 	"github.com/hyperledger/fabric/core/ledger/ledgermgmt"
+	"github.com/hyperledger/fabric/core/operations"
 	"github.com/hyperledger/fabric/core/peer"
 	"github.com/hyperledger/fabric/core/scc"
 	"github.com/hyperledger/fabric/core/scc/cscc"
@@ -66,14 +75,17 @@ import (
 	"github.com/hyperledger/fabric/gossip/service"
 	"github.com/hyperledger/fabric/msp"
 	"github.com/hyperledger/fabric/msp/mgmt"
-	"github.com/hyperledger/fabric/peer/common"
 	peergossip "github.com/hyperledger/fabric/peer/gossip"
 	"github.com/hyperledger/fabric/peer/version"
 	cb "github.com/hyperledger/fabric/protos/common"
+	common2 "github.com/hyperledger/fabric/protos/common"
 	discprotos "github.com/hyperledger/fabric/protos/discovery"
 	pb "github.com/hyperledger/fabric/protos/peer"
+	"github.com/hyperledger/fabric/protos/token"
 	"github.com/hyperledger/fabric/protos/transientstore"
 	"github.com/hyperledger/fabric/protos/utils"
+	"github.com/hyperledger/fabric/token/server"
+	"github.com/hyperledger/fabric/token/tms/manager"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -84,23 +96,16 @@ const (
 	chaincodeAddrKey       = "peer.chaincodeAddress"
 	chaincodeListenAddrKey = "peer.chaincodeListenAddress"
 	defaultChaincodePort   = 7052
+	grpcMaxConcurrency     = 2500
 )
 
 var chaincodeDevMode bool
-var orderingEndpoint string
-
-// XXXDefaultChannelMSPID should not be defined in production code
-// It should only be referenced in tests.  However, it is necessary
-// to support the 'default chain' setup so temporarily adding until
-// this concept can be removed to testing scenarios only
-const XXXDefaultChannelMSPID = "SampleOrg"
 
 func startCmd() *cobra.Command {
 	// Set the flags on the node start command.
 	flags := nodeStartCmd.Flags()
 	flags.BoolVarP(&chaincodeDevMode, "peer-chaincodedev", "", false,
 		"Whether peer in chaincode development mode")
-	flags.StringVarP(&orderingEndpoint, "orderer", "o", "orderer:7050", "Ordering service endpoint")
 
 	return nodeStartCmd
 }
@@ -131,22 +136,10 @@ func serve(args []string) error {
 		panic("Unsupported msp type " + msp.ProviderTypeToString(mspType))
 	}
 
-	// set the logging level for specific modules defined via environment
-	// variables or core.yaml
-	overrideLogModules := []string{"msp", "gossip", "ledger", "cauthdsl", "policies", "grpc", "peer.gossip"}
-	for _, module := range overrideLogModules {
-		err := common.SetLogLevelFromViper(module)
-		if err != nil {
-			logger.Warningf("Error setting log level for module '%s': %s", module, err.Error())
-		}
-	}
-
 	// Trace RPCs with the golang.org/x/net/trace package. This was moved out of
 	// the deliver service connection factory as it has process wide implications
 	// and was racy with respect to initialization of gRPC clients and servers.
 	grpc.EnableTracing = true
-
-	flogging.SetPeerStartupModulesMap()
 
 	logger.Infof("Starting %s", version.GetInfo())
 
@@ -163,8 +156,66 @@ func serve(args []string) error {
 		&car.Platform{},
 	)
 
+	identityDeserializerFactory := func(chainID string) msp.IdentityDeserializer {
+		return mgmt.GetManagerForChain(chainID)
+	}
+
+	opsSystem := newOperationsSystem()
+	err := opsSystem.Start()
+	if err != nil {
+		return errors.WithMessage(err, "failed to initialize operations subystems")
+	}
+	defer opsSystem.Stop()
+
+	metricsProvider := opsSystem.Provider
+	logObserver := floggingmetrics.NewObserver(metricsProvider)
+	flogging.Global.SetObserver(logObserver)
+
+	membershipInfoProvider := privdata.NewMembershipInfoProvider(createSelfSignedData(), identityDeserializerFactory)
+
+	// TODO, unfortunately, the lifecycleImpl initialization is very unclean at the moment.
+	// This is because ccprovider.SetChaincodePath only works after ledgermgmt.Initialize,
+	// but ledgermgmt.Initialize requires a reference to lifecycle.  Finally,
+	// lscc requires a reference to the system chaincode provider in order to be created,
+	// which requires chaincode support to be up, which also requires, you guessed it, lifecycle.
+	// Once we remove the v1.0 lifecycle, we should be good to collapse all of the init
+	// of lifecycle to this point
+	lifecycleImpl := &lifecycle.Lifecycle{
+		LegacyDeployedCCInfoProvider: &lscc.DeployedCCInfoProvider{},
+		Serializer:                   &lifecycle.Serializer{},
+		ChannelConfigSource:          peer.Default,
+	}
+
 	//initialize resource management exit
-	ledgermgmt.Initialize(peer.ConfigTxProcessors, pr)
+	ledgermgmt.Initialize(
+		&ledgermgmt.Initializer{
+			CustomTxProcessors:            peer.ConfigTxProcessors,
+			PlatformRegistry:              pr,
+			DeployedChaincodeInfoProvider: lifecycleImpl,
+			MembershipInfoProvider:        membershipInfoProvider,
+			MetricsProvider:               metricsProvider,
+			HealthCheckRegistry:           opsSystem,
+		},
+	)
+
+	// Configure CC package storage
+	chaincodeInstallPath := ccprovider.GetChaincodeInstallPathFromViper()
+	ccprovider.SetChaincodesPath(chaincodeInstallPath)
+
+	ccPackageParser := &persistence.ChaincodePackageParser{}
+	ccStore := &persistence.Store{
+		Path:       chaincodeInstallPath,
+		ReadWriter: &persistence.FilesystemIO{},
+	}
+
+	packageProvider := &persistence.PackageProvider{
+		LegacyPP: &ccprovider.CCInfoFSImpl{},
+		Store:    ccStore,
+		Parser:   ccPackageParser,
+	}
+
+	lifecycleImpl.ChaincodeStore = ccStore
+	lifecycleImpl.PackageParser = ccPackageParser
 
 	// Parameter overrides must be processed before any parameters are
 	// cached. Failures to cache cause the server to terminate immediately.
@@ -173,7 +224,6 @@ func serve(args []string) error {
 		logger.Info("Disable loading validity system chaincode")
 
 		viper.Set("chaincode.mode", chaincode.DevModeUserRunsChaincode)
-
 	}
 
 	if err := peer.CacheConfiguration(); err != nil {
@@ -185,18 +235,34 @@ func serve(args []string) error {
 		err = fmt.Errorf("Failed to get Peer Endpoint: %s", err)
 		return err
 	}
-	var peerHost string
-	peerHost, _, err = net.SplitHostPort(peerEndpoint.Address)
+
+	peerHost, _, err := net.SplitHostPort(peerEndpoint.Address)
 	if err != nil {
 		return fmt.Errorf("peer address is not in the format of host:port: %v", err)
 	}
 
 	listenAddr := viper.GetString("peer.listenAddress")
-
 	serverConfig, err := peer.GetServerConfig()
 	if err != nil {
 		logger.Fatalf("Error loading secure config for peer (%s)", err)
 	}
+
+	throttle := comm.NewThrottle(grpcMaxConcurrency)
+	serverConfig.Logger = flogging.MustGetLogger("core.comm").With("server", "PeerServer")
+	serverConfig.MetricsProvider = metricsProvider
+	serverConfig.UnaryInterceptors = append(
+		serverConfig.UnaryInterceptors,
+		grpcmetrics.UnaryServerInterceptor(grpcmetrics.NewUnaryMetrics(metricsProvider)),
+		grpclogging.UnaryServerInterceptor(flogging.MustGetLogger("comm.grpc.server").Zap()),
+		throttle.UnaryServerIntercptor,
+	)
+	serverConfig.StreamInterceptors = append(
+		serverConfig.StreamInterceptors,
+		grpcmetrics.StreamServerInterceptor(grpcmetrics.NewStreamMetrics(metricsProvider)),
+		grpclogging.StreamServerInterceptor(flogging.MustGetLogger("comm.grpc.server").Zap()),
+		throttle.StreamServerInterceptor,
+	)
+
 	peerServer, err := peer.NewPeerServer(listenAddr, serverConfig)
 	if err != nil {
 		logger.Fatalf("Failed to create peer server (%s)", err)
@@ -223,12 +289,8 @@ func serve(args []string) error {
 		}
 	}
 
-	abServer := peer.NewDeliverEventsServer(mutualTLS, policyCheckerProvider, &peer.DeliverChainManager{})
+	abServer := peer.NewDeliverEventsServer(mutualTLS, policyCheckerProvider, &peer.DeliverChainManager{}, metricsProvider)
 	pb.RegisterDeliverServer(peerServer.Server(), abServer)
-
-	// Setup chaincode path
-	chaincodeInstallPath := ccprovider.GetChaincodeInstallPathFromViper()
-	ccprovider.SetChaincodesPath(chaincodeInstallPath)
 
 	// Create a self-signed CA for chaincode service
 	ca, err := tlsgen.NewCA()
@@ -239,20 +301,93 @@ func serve(args []string) error {
 	if err != nil {
 		logger.Panicf("Failed to create chaincode server: %s", err)
 	}
-	chaincodeSupport, ccp, sccp := registerChaincodeSupport(
-		ccSrv,
-		ccEndpoint,
-		ca,
-		chaincodeInstallPath,
-		aclProvider,
-		pr,
+
+	//get user mode
+	userRunsCC := chaincode.IsDevMode()
+	tlsEnabled := viper.GetBool("peer.tls.enabled")
+
+	// create chaincode specific tls CA
+	authenticator := accesscontrol.NewAuthenticator(ca)
+	ipRegistry := inproccontroller.NewRegistry()
+
+	sccp := scc.NewProvider(peer.Default, peer.DefaultSupport, ipRegistry)
+	lsccInst := lscc.New(sccp, aclProvider, pr)
+
+	lifecycleImpl.LegacyImpl = lsccInst
+
+	mspID := viper.GetString("peer.localMspId")
+
+	lifecycleSCC := &lifecycle.SCC{
+		Dispatcher: &dispatcher.Dispatcher{
+			Protobuf: &dispatcher.ProtobufImpl{},
+		},
+		Functions:           lifecycleImpl,
+		OrgMSPID:            mspID,
+		ChannelConfigSource: peer.Default,
+	}
+
+	dockerProvider := dockercontroller.NewProvider(
+		viper.GetString("peer.id"),
+		viper.GetString("peer.networkId"),
+		opsSystem.Provider,
 	)
+	dockerVM := dockercontroller.NewDockerVM(
+		dockerProvider.PeerID,
+		dockerProvider.NetworkID,
+		dockerProvider.BuildMetrics,
+	)
+
+	err = opsSystem.RegisterChecker("docker", dockerVM)
+	if err != nil {
+		logger.Panicf("failed to register docker health check: %s", err)
+	}
+
+	chaincodeSupport := chaincode.NewChaincodeSupport(
+		chaincode.GlobalConfig(),
+		ccEndpoint,
+		userRunsCC,
+		ca.CertBytes(),
+		authenticator,
+		packageProvider,
+		lifecycleImpl,
+		aclProvider,
+		container.NewVMController(
+			map[string]container.VMProvider{
+				dockercontroller.ContainerType: dockerProvider,
+				inproccontroller.ContainerType: ipRegistry,
+			},
+		),
+		sccp,
+		pr,
+		peer.DefaultSupport,
+		opsSystem.Provider,
+		lifecycleImpl,
+	)
+	ipRegistry.ChaincodeSupport = chaincodeSupport
+	ccp := chaincode.NewProvider(chaincodeSupport)
+
+	ccSupSrv := pb.ChaincodeSupportServer(chaincodeSupport)
+	if tlsEnabled {
+		ccSupSrv = authenticator.Wrap(ccSupSrv)
+	}
+
+	csccInst := cscc.New(ccp, sccp, aclProvider, lifecycleImpl, lsccInst, lifecycleImpl)
+	qsccInst := qscc.New(aclProvider)
+
+	//Now that chaincode is initialized, register all system chaincodes.
+	sccs := scc.CreatePluginSysCCs(sccp)
+	for _, cc := range append([]scc.SelfDescribingSysCC{lsccInst, csccInst, qsccInst, lifecycleSCC}, sccs...) {
+		sccp.RegisterSysCC(cc)
+	}
+	pb.RegisterChaincodeSupportServer(ccSrv.Server(), ccSupSrv)
+
+	// start the chaincode specific gRPC listening service
 	go ccSrv.Start()
 
 	logger.Debugf("Running peer")
 
 	// Start the Admin server
-	startAdminServer(listenAddr, peerServer.Server())
+	startAdminServer(listenAddr, peerServer.Server(), metricsProvider)
 
 	privDataDist := func(channel string, txID string, privateData *transientstore.TxPvtReadWriteSetWithConfigInfo, blkHt uint64) error {
 		return service.GetGossipService().DistributePrivateData(channel, txID, privateData, blkHt)
@@ -291,75 +426,34 @@ func serve(args []string) error {
 		SigningIdentityFetcher:  signingIdentityFetcher,
 	})
 	endorserSupport.PluginEndorser = pluginEndorser
-	serverEndorser := endorser.NewEndorserServer(privDataDist, endorserSupport, pr)
+	serverEndorser := endorser.NewEndorserServer(privDataDist, endorserSupport, pr, metricsProvider)
 	auth := authHandler.ChainFilters(serverEndorser, authFilters...)
 	// Register the Endorser server
 	pb.RegisterEndorserServer(peerServer.Server(), auth)
 
-	// Initialize gossip component
-	bootstrap := viper.GetStringSlice("peer.gossip.bootstrap")
-
 	policyMgr := peer.NewChannelPolicyManagerGetter()
-	messageCryptoService := peergossip.NewMCS(
-		policyMgr,
-		localmsp.NewSigner(),
-		mgmt.NewDeserializersManager())
-	secAdv := peergossip.NewSecurityAdvisor(mgmt.NewDeserializersManager())
 
-	// callback function for secure dial options for gossip service
-	secureDialOpts := func() []grpc.DialOption {
-		var dialOpts []grpc.DialOption
-		// set max send/recv msg sizes
-		dialOpts = append(
-			dialOpts,
-			grpc.WithDefaultCallOptions(
-				grpc.MaxCallRecvMsgSize(comm.MaxRecvMsgSize),
-				grpc.MaxCallSendMsgSize(comm.MaxSendMsgSize)))
-		// set the keepalive options
-		kaOpts := comm.DefaultKeepaliveOptions
-		if viper.IsSet("peer.keepalive.client.interval") {
-			kaOpts.ClientInterval = viper.GetDuration("peer.keepalive.client.interval")
-		}
-		if viper.IsSet("peer.keepalive.client.timeout") {
-			kaOpts.ClientTimeout = viper.GetDuration("peer.keepalive.client.timeout")
-		}
-		dialOpts = append(dialOpts, comm.ClientKeepaliveOptions(kaOpts)...)
-
-		if viper.GetBool("peer.tls.enabled") {
-			dialOpts = append(dialOpts, grpc.WithTransportCredentials(comm.GetCredentialSupport().GetPeerCredentials()))
-		} else {
-			dialOpts = append(dialOpts, grpc.WithInsecure())
-		}
-		return dialOpts
-	}
-
-	var certs *gossipcommon.TLSCertificates
-	if peerServer.TLSEnabled() {
-		serverCert := peerServer.ServerCertificate()
-		clientCert, err := peer.GetClientCertificate()
-		if err != nil {
-			return errors.Wrap(err, "failed obtaining client certificates")
-		}
-		certs = &gossipcommon.TLSCertificates{}
-		certs.TLSServerCert.Store(&serverCert)
-		certs.TLSClientCert.Store(&clientCert)
-	}
-
-	err = service.InitGossipService(serializedIdentity, peerEndpoint.Address, peerServer.Server(), certs,
-		messageCryptoService, secAdv, secureDialOpts, bootstrap...)
+	// Initialize gossip component
+	err = initGossipService(policyMgr, metricsProvider, peerServer, serializedIdentity, peerEndpoint.Address)
 	if err != nil {
 		return err
 	}
 	defer service.GetGossipService().Stop()
 
-	//initialize system chaincodes
+	// register prover grpc service
+	err = registerProverService(peerServer, aclProvider, signingIdentity)
+	if err != nil {
+		return err
+	}
 
-	//deploy system chaincodes
+	// initialize system chaincodes
+
+	// deploy system chaincodes
 	sccp.DeploySysCCs("", ccp)
 	logger.Infof("Deployed system chaincodes")
 
 	installedCCs := func() ([]ccdef.InstalledChaincode, error) {
-		return cc.InstalledCCs(chaincodeInstallPath, ioutil.ReadDir, ccprovider.LoadPackage)
+		return packageProvider.ListInstalledChaincodes()
 	}
 	lifecycle, err := cc.NewLifeCycle(cc.Enumerate(installedCCs))
 	if err != nil {
@@ -370,9 +464,9 @@ func serve(args []string) error {
 	})
 	lifecycle.AddListener(onUpdate)
 
-	//this brings up all the chains
+	// this brings up all the channels
 	peer.Initialize(func(cid string) {
-		logger.Debugf("Deploying system CC, for chain <%s>", cid)
+		logger.Debugf("Deploying system CC, for channel <%s>", cid)
 		sccp.DeploySysCCs(cid, ccp)
 		sub, err := lifecycle.NewChannelSubscription(cid, cc.QueryCreatorFunc(func() (cc.Query, error) {
 			return peer.GetLedger(cid).NewQueryExecutor()
@@ -381,26 +475,25 @@ func serve(args []string) error {
 			logger.Panicf("Failed subscribing to chaincode lifecycle updates")
 		}
 		cceventmgmt.GetMgr().Register(cid, sub)
-	}, ccp, sccp, txvalidator.MapBasedPluginMapper(validationPluginsByName), pr)
+	}, ccp, sccp, plugin.MapBasedMapper(validationPluginsByName),
+		pr, lifecycleImpl, membershipInfoProvider, metricsProvider, lsccInst, lifecycleImpl)
 
 	if viper.GetBool("peer.discovery.enabled") {
 		registerDiscoveryService(peerServer, policyMgr, lifecycle)
 	}
 
-	logger.Infof("Starting peer with ID=[%s], network ID=[%s], address=[%s]",
-		peerEndpoint.Id, viper.GetString("peer.networkId"), peerEndpoint.Address)
+	networkID := viper.GetString("peer.networkId")
+
+	logger.Infof("Starting peer with ID=[%s], network ID=[%s], address=[%s]", peerEndpoint.Id, networkID, peerEndpoint.Address)
+
+	// Get configuration before starting go routines to avoid
+	// racing in tests
+	profileEnabled := viper.GetBool("peer.profile.enabled")
+	profileListenAddress := viper.GetString("peer.profile.listenAddress")
 
 	// Start the grpc server. Done in a goroutine so we can deploy the
 	// genesis block if needed.
 	serve := make(chan error)
-
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		sig := <-sigs
-		logger.Debugf("sig: %s", sig)
-		serve <- nil
-	}()
 
 	go func() {
 		var grpcErr error
@@ -413,9 +506,8 @@ func serve(args []string) error {
 	}()
 
 	// Start profiling http endpoint if enabled
-	if viper.GetBool("peer.profile.enabled") {
+	if profileEnabled {
 		go func() {
-			profileListenAddress := viper.GetString("peer.profile.listenAddress")
 			logger.Infof("Starting profiling server with listenAddress = %s", profileListenAddress)
 			if profileErr := http.ListenAndServe(profileListenAddress, nil); profileErr != nil {
 				logger.Errorf("Error starting profiler: %s", profileErr)
@@ -423,11 +515,30 @@ func serve(args []string) error {
 		}()
 	}
 
-	logger.Infof("Started peer with ID=[%s], network ID=[%s], address=[%s]",
-		peerEndpoint.Id, viper.GetString("peer.networkId"), peerEndpoint.Address)
+	go handleSignals(addPlatformSignals(map[os.Signal]func(){
+		syscall.SIGINT:  func() { serve <- nil },
+		syscall.SIGTERM: func() { serve <- nil },
+	}))
+
+	logger.Infof("Started peer with ID=[%s], network ID=[%s], address=[%s]", peerEndpoint.Id, networkID, peerEndpoint.Address)
 
 	// Block until grpc server exits
 	return <-serve
+}
+
+func handleSignals(handlers map[os.Signal]func()) {
+	var signals []os.Signal
+	for sig := range handlers {
+		signals = append(signals, sig)
+	}
+
+	signalChan := make(chan os.Signal, 1)
+	signal.Notify(signalChan, signals...)
+
+	for sig := range signalChan {
+		logger.Infof("Received signal: %d (%s)", sig, sig)
+		handlers[sig]()
+	}
 }
 
 func localPolicy(policyObject proto.Message) policies.Policy {
@@ -438,6 +549,24 @@ func localPolicy(policyObject proto.Message) policies.Policy {
 		logger.Panicf("Failed creating local policy: +%v", err)
 	}
 	return policy
+}
+
+func createSelfSignedData() common2.SignedData {
+	sId := mgmt.GetLocalSigningIdentityOrPanic()
+	msg := make([]byte, 32)
+	sig, err := sId.Sign(msg)
+	if err != nil {
+		logger.Panicf("Failed creating self signed data because message signing failed: %v", err)
+	}
+	peerIdentity, err := sId.Serialize()
+	if err != nil {
+		logger.Panicf("Failed creating self signed data because peer identity couldn't be serialized: %v", err)
+	}
+	return common2.SignedData{
+		Data:      msg,
+		Signature: sig,
+		Identity:  peerIdentity,
+	}
 }
 
 func registerDiscoveryService(peerServer *comm.GRPCServer, polMgr policies.ChannelPolicyManagerGetter, lc *cc.Lifecycle) {
@@ -497,6 +626,9 @@ func createChaincodeServer(ca tlsgen.CA, peerHostname string) (srv *comm.GRPCSer
 		return nil, "", err
 	}
 
+	// set the logger for the server
+	config.Logger = flogging.MustGetLogger("core.comm").With("server", "ChaincodeServer")
+
 	// Override TLS configuration if TLS is applicable
 	if config.SecOpts.UseTLS {
 		// Create a self-signed TLS certificate with a SAN that matches the computed chaincode endpoint
@@ -526,6 +658,7 @@ func createChaincodeServer(ca tlsgen.CA, peerHostname string) (srv *comm.GRPCSer
 		ServerMinInterval: time.Duration(1) * time.Minute,  // match ClientInterval
 	}
 	config.KaOpts = chaincodeKeepaliveOptions
+	config.HealthCheckEnabled = true
 
 	srv, err = comm.NewGRPCServer(cclistenAddress, config)
 	if err != nil {
@@ -607,68 +740,6 @@ func computeChaincodeEndpoint(peerHostname string) (ccEndpoint string, err error
 	return ccEndpoint, nil
 }
 
-//NOTE - when we implement JOIN we will no longer pass the chainID as param
-//The chaincode support will come up without registering system chaincodes
-//which will be registered only during join phase.
-func registerChaincodeSupport(grpcServer *comm.GRPCServer, ccEndpoint string, ca tlsgen.CA, chaincodeInstallPath string, aclProvider aclmgmt.ACLProvider, pr *platforms.Registry) (*chaincode.ChaincodeSupport, ccprovider.ChaincodeProvider, *scc.Provider) {
-	//get user mode
-	userRunsCC := chaincode.IsDevMode()
-	tlsEnabled := viper.GetBool("peer.tls.enabled")
-
-	authenticator := accesscontrol.NewAuthenticator(ca)
-	ipRegistry := inproccontroller.NewRegistry()
-
-	sccp := scc.NewProvider(peer.Default, peer.DefaultSupport, ipRegistry)
-	lsccInst := lscc.New(sccp, aclProvider, pr)
-
-	packageProvider := &persistence.PackageProvider{
-		LegacyPP: &ccprovider.CCInfoFSImpl{},
-		Store: &persistence.Store{
-			Path:       chaincodeInstallPath,
-			ReadWriter: &persistence.FilesystemIO{},
-		},
-	}
-
-	chaincodeSupport := chaincode.NewChaincodeSupport(
-		chaincode.GlobalConfig(),
-		ccEndpoint,
-		userRunsCC,
-		ca.CertBytes(),
-		authenticator,
-		packageProvider,
-		lsccInst,
-		aclProvider,
-		container.NewVMController(map[string]container.VMProvider{
-			dockercontroller.ContainerType: dockercontroller.NewProvider(
-				viper.GetString("peer.id"),
-				viper.GetString("peer.networkId"),
-			),
-			inproccontroller.ContainerType: ipRegistry,
-		}),
-		sccp,
-		pr,
-	)
-	ipRegistry.ChaincodeSupport = chaincodeSupport
-	ccp := chaincode.NewProvider(chaincodeSupport)
-
-	ccSrv := pb.ChaincodeSupportServer(chaincodeSupport)
-	if tlsEnabled {
-		ccSrv = authenticator.Wrap(ccSrv)
-	}
-
-	csccInst := cscc.New(ccp, sccp, aclProvider)
-	qsccInst := qscc.New(aclProvider)
-
-	//Now that chaincode is initialized, register all system chaincodes.
-	sccs := scc.CreatePluginSysCCs(sccp)
-	for _, cc := range append([]scc.SelfDescribingSysCC{lsccInst, csccInst, qsccInst}, sccs...) {
-		sccp.RegisterSysCC(cc)
-	}
-	pb.RegisterChaincodeSupportServer(grpcServer.Server(), ccSrv)
-
-	return chaincodeSupport, ccp, sccp
-}
-
 func adminHasSeparateListener(peerListenAddr string, adminListenAddress string) bool {
 	// By default, admin listens on the same port as the peer data service
 	if adminListenAddress == "" {
@@ -688,7 +759,7 @@ func adminHasSeparateListener(peerListenAddr string, adminListenAddress string) 
 	return adminPort != peerPort
 }
 
-func startAdminServer(peerListenAddr string, peerServer *grpc.Server) {
+func startAdminServer(peerListenAddr string, peerServer *grpc.Server, metricsProvider metrics.Provider) {
 	adminListenAddress := viper.GetString("peer.adminService.listenAddress")
 	separateLsnrForAdmin := adminHasSeparateListener(peerListenAddr, adminListenAddress)
 	mspID := viper.GetString("peer.localMspId")
@@ -700,6 +771,21 @@ func startAdminServer(peerListenAddr string, peerServer *grpc.Server) {
 		if err != nil {
 			logger.Fatalf("Error loading secure config for admin service (%s)", err)
 		}
+		throttle := comm.NewThrottle(grpcMaxConcurrency)
+		serverConfig.Logger = flogging.MustGetLogger("core.comm").With("server", "AdminServer")
+		serverConfig.MetricsProvider = metricsProvider
+		serverConfig.UnaryInterceptors = append(
+			serverConfig.UnaryInterceptors,
+			grpcmetrics.UnaryServerInterceptor(grpcmetrics.NewUnaryMetrics(metricsProvider)),
+			grpclogging.UnaryServerInterceptor(flogging.MustGetLogger("comm.grpc.server").Zap()),
+			throttle.UnaryServerIntercptor,
+		)
+		serverConfig.StreamInterceptors = append(
+			serverConfig.StreamInterceptors,
+			grpcmetrics.StreamServerInterceptor(grpcmetrics.NewStreamMetrics(metricsProvider)),
+			grpclogging.StreamServerInterceptor(flogging.MustGetLogger("comm.grpc.server").Zap()),
+			throttle.StreamServerInterceptor,
+		)
 		adminServer, err := peer.NewPeerServer(adminListenAddress, serverConfig)
 		if err != nil {
 			logger.Fatalf("Failed to create admin server (%s)", err)
@@ -711,4 +797,128 @@ func startAdminServer(peerListenAddr string, peerServer *grpc.Server) {
 	}
 
 	pb.RegisterAdminServer(gRPCService, admin.NewAdminServer(adminPolicy))
+}
+
+// secureDialOpts is the callback function for secure dial options for gossip service
+func secureDialOpts() []grpc.DialOption {
+	var dialOpts []grpc.DialOption
+	// set max send/recv msg sizes
+	dialOpts = append(
+		dialOpts,
+		grpc.WithDefaultCallOptions(
+			grpc.MaxCallRecvMsgSize(comm.MaxRecvMsgSize),
+			grpc.MaxCallSendMsgSize(comm.MaxSendMsgSize)))
+	// set the keepalive options
+	kaOpts := comm.DefaultKeepaliveOptions
+	if viper.IsSet("peer.keepalive.client.interval") {
+		kaOpts.ClientInterval = viper.GetDuration("peer.keepalive.client.interval")
+	}
+	if viper.IsSet("peer.keepalive.client.timeout") {
+		kaOpts.ClientTimeout = viper.GetDuration("peer.keepalive.client.timeout")
+	}
+	dialOpts = append(dialOpts, comm.ClientKeepaliveOptions(kaOpts)...)
+
+	if viper.GetBool("peer.tls.enabled") {
+		dialOpts = append(dialOpts, grpc.WithTransportCredentials(comm.GetCredentialSupport().GetPeerCredentials()))
+	} else {
+		dialOpts = append(dialOpts, grpc.WithInsecure())
+	}
+	return dialOpts
+}
+
+// initGossipService will initialize the gossip service by:
+// 1. Enable TLS if configured;
+// 2. Init the message crypto service;
+// 3. Init the security advisor;
+// 4. Init gossip related struct.
+func initGossipService(policyMgr policies.ChannelPolicyManagerGetter, metricsProvider metrics.Provider,
+	peerServer *comm.GRPCServer, serializedIdentity []byte, peerAddr string) error {
+	var certs *gossipcommon.TLSCertificates
+	if peerServer.TLSEnabled() {
+		serverCert := peerServer.ServerCertificate()
+		clientCert, err := peer.GetClientCertificate()
+		if err != nil {
+			return errors.Wrap(err, "failed obtaining client certificates")
+		}
+		certs = &gossipcommon.TLSCertificates{}
+		certs.TLSServerCert.Store(&serverCert)
+		certs.TLSClientCert.Store(&clientCert)
+	}
+
+	messageCryptoService := peergossip.NewMCS(
+		policyMgr,
+		localmsp.NewSigner(),
+		mgmt.NewDeserializersManager(),
+	)
+	secAdv := peergossip.NewSecurityAdvisor(mgmt.NewDeserializersManager())
+	bootstrap := viper.GetStringSlice("peer.gossip.bootstrap")
+
+	return service.InitGossipService(
+		serializedIdentity,
+		metricsProvider,
+		peerAddr,
+		peerServer.Server(),
+		certs,
+		messageCryptoService,
+		secAdv,
+		secureDialOpts,
+		bootstrap...,
+	)
+}
+
+func newOperationsSystem() *operations.System {
+	return operations.NewSystem(operations.Options{
+		Logger:        flogging.MustGetLogger("peer.operations"),
+		ListenAddress: viper.GetString("operations.listenAddress"),
+		Metrics: operations.MetricsOptions{
+			Provider: viper.GetString("metrics.provider"),
+			Statsd: &operations.Statsd{
+				Network:       viper.GetString("metrics.statsd.network"),
+				Address:       viper.GetString("metrics.statsd.address"),
+				WriteInterval: viper.GetDuration("metrics.statsd.writeInterval"),
+				Prefix:        viper.GetString("metrics.statsd.prefix"),
+			},
+		},
+		TLS: operations.TLS{
+			Enabled:            viper.GetBool("operations.tls.enabled"),
+			CertFile:           viper.GetString("operations.tls.cert.file"),
+			KeyFile:            viper.GetString("operations.tls.key.file"),
+			ClientCertRequired: viper.GetBool("operations.tls.clientAuthRequired"),
+			ClientCACertFiles:  viper.GetStringSlice("operations.tls.clientRootCAs.files"),
+		},
+		Version: metadata.Version,
+	})
+}
+
+func registerProverService(peerServer *comm.GRPCServer, aclProvider aclmgmt.ACLProvider, signingIdentity msp.SigningIdentity) error {
+	policyChecker := &server.PolicyBasedAccessControl{
+		ACLProvider: aclProvider,
+		ACLResources: &server.ACLResources{
+			IssueTokens:    resources.Token_Issue,
+			TransferTokens: resources.Token_Transfer,
+			ListTokens:     resources.Token_List,
+		},
+	}
+
+	responseMarshaler, err := server.NewResponseMarshaler(signingIdentity)
+	if err != nil {
+		logger.Errorf("Failed to create prover service: %s", err)
+		return err
+	}
+
+	prover := &server.Prover{
+		CapabilityChecker: &server.TokenCapabilityChecker{
+			PeerOps: peer.Default,
+		},
+		Marshaler:     responseMarshaler,
+		PolicyChecker: policyChecker,
+		TMSManager: &server.Manager{
+			LedgerManager: &server.PeerLedgerManager{},
+			TokenOwnerValidatorManager: &server.PeerTokenOwnerValidatorManager{
+				IdentityDeserializerManager: &manager.FabricIdentityDeserializerManager{},
+			},
+		},
+	}
+	token.RegisterProverServer(peerServer.Server(), prover)
+	return nil
 }

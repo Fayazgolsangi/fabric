@@ -7,6 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 package chaincode
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -19,7 +20,6 @@ import (
 	"github.com/hyperledger/fabric/common/cauthdsl"
 	"github.com/hyperledger/fabric/common/localmsp"
 	"github.com/hyperledger/fabric/common/util"
-	"github.com/hyperledger/fabric/core/chaincode"
 	"github.com/hyperledger/fabric/core/chaincode/shim"
 	"github.com/hyperledger/fabric/core/container"
 	"github.com/hyperledger/fabric/msp"
@@ -33,7 +33,6 @@ import (
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	"golang.org/x/net/context"
 )
 
 // checkSpec to see if chaincode resides within current package capture for language.
@@ -49,7 +48,7 @@ func checkSpec(spec *pb.ChaincodeSpec) error {
 // getChaincodeDeploymentSpec get chaincode deployment spec given the chaincode spec
 func getChaincodeDeploymentSpec(spec *pb.ChaincodeSpec, crtPkg bool) (*pb.ChaincodeDeploymentSpec, error) {
 	var codePackageBytes []byte
-	if chaincode.IsDevMode() == false && crtPkg {
+	if crtPkg {
 		var err error
 		if err = checkSpec(spec); err != nil {
 			return nil, err
@@ -81,14 +80,6 @@ func getChaincodeSpec(cmd *cobra.Command) (*pb.ChaincodeSpec, error) {
 	}
 
 	chaincodeLang = strings.ToUpper(chaincodeLang)
-	if javaEnabled() {
-		logger.Debug("java chaincode enabled")
-	} else {
-		logger.Debug("java chaincode disabled")
-		if pb.ChaincodeSpec_Type_value[chaincodeLang] == int32(pb.ChaincodeSpec_JAVA) {
-			return nil, errors.New("java chaincode is work-in-progress and disabled")
-		}
-	}
 	spec = &pb.ChaincodeSpec{
 		Type:        pb.ChaincodeSpec_Type(pb.ChaincodeSpec_Type_value[chaincodeLang]),
 		ChaincodeId: &pb.ChaincodeID{Path: chaincodePath, Name: chaincodeName, Version: chaincodeVersion},
@@ -133,7 +124,7 @@ func chaincodeInvokeOrQuery(cmd *cobra.Command, invoke bool, cf *ChaincodeCmdFac
 			return errors.WithMessage(err, "error while unmarshaling chaincode action")
 		}
 		if proposalResp.Endorsement == nil {
-			return errors.Errorf("endorsement failure during invoke. chaincode result: %v", ca.Response)
+			return errors.Errorf("endorsement failure during invoke. response: %v", proposalResp.Response)
 		}
 		logger.Infof("Chaincode invoke successful. result: %v", ca.Response)
 	} else {
@@ -161,11 +152,13 @@ func chaincodeInvokeOrQuery(cmd *cobra.Command, invoke bool, cf *ChaincodeCmdFac
 }
 
 type collectionConfigJson struct {
-	Name          string `json:"name"`
-	Policy        string `json:"policy"`
-	RequiredCount int32  `json:"requiredPeerCount"`
-	MaxPeerCount  int32  `json:"maxPeerCount"`
-	BlockToLive   uint64 `json:"blockToLive"`
+	Name            string `json:"name"`
+	Policy          string `json:"policy"`
+	RequiredCount   int32  `json:"requiredPeerCount"`
+	MaxPeerCount    int32  `json:"maxPeerCount"`
+	BlockToLive     uint64 `json:"blockToLive"`
+	MemberOnlyRead  bool   `json:"memberOnlyRead"`
+	MemberOnlyWrite bool   `json:"memberOnlyWrite"`
 }
 
 // getCollectionConfig retrieves the collection configuration
@@ -211,6 +204,8 @@ func getCollectionConfigFromBytes(cconfBytes []byte) ([]byte, error) {
 					RequiredPeerCount: cconfitem.RequiredCount,
 					MaximumPeerCount:  cconfitem.MaxPeerCount,
 					BlockToLive:       cconfitem.BlockToLive,
+					MemberOnlyRead:    cconfitem.MemberOnlyRead,
+					MemberOnlyWrite:   cconfitem.MemberOnlyWrite,
 				},
 			},
 		}

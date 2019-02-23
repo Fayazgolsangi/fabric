@@ -18,18 +18,15 @@ import (
 	"github.com/hyperledger/fabric/common/ledger/blockledger"
 	cb "github.com/hyperledger/fabric/protos/common"
 	ab "github.com/hyperledger/fabric/protos/orderer"
-	"github.com/op/go-logging"
 	"github.com/pkg/errors"
 )
 
-const pkgLogID = "orderer/ledger/jsonledger"
+var logger = flogging.MustGetLogger("common.ledger.blockledger.json")
 
-var logger *logging.Logger
 var closedChan chan struct{}
 var fileLock sync.Mutex
 
 func init() {
-	logger = flogging.MustGetLogger(pkgLogID)
 	closedChan = make(chan struct{})
 	close(closedChan)
 }
@@ -99,17 +96,6 @@ func (cu *cursor) Next() (*cb.Block, cb.Status) {
 		cu.jl.mutex.Unlock()
 		<-signal
 	}
-}
-
-// ReadyChan supplies a channel which will block until Next will not block
-func (cu *cursor) ReadyChan() <-chan struct{} {
-	cu.jl.mutex.Lock()
-	signal := cu.jl.signal
-	cu.jl.mutex.Unlock()
-	if _, err := os.Stat(cu.jl.blockFilename(cu.blockNumber)); os.IsNotExist(err) {
-		return signal
-	}
-	return closedChan
 }
 
 func (cu *cursor) Close() {}

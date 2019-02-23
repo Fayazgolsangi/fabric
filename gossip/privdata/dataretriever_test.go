@@ -12,6 +12,7 @@ import (
 
 	"github.com/hyperledger/fabric/core/ledger"
 	"github.com/hyperledger/fabric/core/transientstore"
+	privdatacommon "github.com/hyperledger/fabric/gossip/privdata/common"
 	"github.com/hyperledger/fabric/gossip/privdata/mocks"
 	"github.com/hyperledger/fabric/protos/common"
 	gossip2 "github.com/hyperledger/fabric/protos/gossip"
@@ -73,7 +74,7 @@ func TestNewDataRetriever_GetDataFromTransientStore(t *testing.T) {
 
 	// Request digest for private data which is greater than current ledger height
 	// to make it query transient store for missed private data
-	rwSets, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
+	rwSets, _, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
 		Namespace:  namespace,
 		Collection: collectionName,
 		BlockSeq:   2,
@@ -84,7 +85,7 @@ func TestNewDataRetriever_GetDataFromTransientStore(t *testing.T) {
 	assertion := assert.New(t)
 	assertion.NoError(err)
 	assertion.NotEmpty(rwSets)
-	dig2pvtRWSet := rwSets[DigKey{
+	dig2pvtRWSet := rwSets[privdatacommon.DigKey{
 		Namespace:  namespace,
 		Collection: collectionName,
 		BlockSeq:   2,
@@ -137,7 +138,7 @@ func TestNewDataRetriever_GetDataFromLedger(t *testing.T) {
 
 	// Request digest for private data which is greater than current ledger height
 	// to make it query ledger for missed private data
-	rwSets, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
+	rwSets, _, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
 		Namespace:  namespace,
 		Collection: collectionName,
 		BlockSeq:   uint64(5),
@@ -148,7 +149,7 @@ func TestNewDataRetriever_GetDataFromLedger(t *testing.T) {
 	assertion := assert.New(t)
 	assertion.NoError(err)
 	assertion.NotEmpty(rwSets)
-	pvtRWSet := rwSets[DigKey{
+	pvtRWSet := rwSets[privdatacommon.DigKey{
 		Namespace:  namespace,
 		Collection: collectionName,
 		BlockSeq:   5,
@@ -181,7 +182,7 @@ func TestNewDataRetriever_FailGetPvtDataFromLedger(t *testing.T) {
 
 	// Request digest for private data which is greater than current ledger height
 	// to make it query transient store for missed private data
-	rwSets, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
+	rwSets, _, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
 		Namespace:  namespace,
 		Collection: collectionName,
 		BlockSeq:   uint64(5),
@@ -224,7 +225,7 @@ func TestNewDataRetriever_GetOnlyRelevantPvtData(t *testing.T) {
 
 	// Request digest for private data which is greater than current ledger height
 	// to make it query transient store for missed private data
-	rwSets, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
+	rwSets, _, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
 		Namespace:  namespace,
 		Collection: collectionName,
 		BlockSeq:   uint64(5),
@@ -235,7 +236,7 @@ func TestNewDataRetriever_GetOnlyRelevantPvtData(t *testing.T) {
 	assertion := assert.New(t)
 	assertion.NoError(err)
 	assertion.NotEmpty(rwSets)
-	pvtRWSet := rwSets[DigKey{
+	pvtRWSet := rwSets[privdatacommon.DigKey{
 		Namespace:  namespace,
 		Collection: collectionName,
 		BlockSeq:   5,
@@ -310,7 +311,7 @@ func TestNewDataRetriever_GetMultipleDigests(t *testing.T) {
 
 	// Request digest for private data which is greater than current ledger height
 	// to make it query transient store for missed private data
-	rwSets, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
+	rwSets, _, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
 		Namespace:  ns1,
 		Collection: col1,
 		BlockSeq:   uint64(5),
@@ -329,7 +330,7 @@ func TestNewDataRetriever_GetMultipleDigests(t *testing.T) {
 	assertion.NotEmpty(rwSets)
 	assertion.Equal(2, len(rwSets))
 
-	pvtRWSet := rwSets[DigKey{
+	pvtRWSet := rwSets[privdatacommon.DigKey{
 		Namespace:  ns1,
 		Collection: col1,
 		BlockSeq:   5,
@@ -344,7 +345,7 @@ func TestNewDataRetriever_GetMultipleDigests(t *testing.T) {
 		mergedRWSet = append(mergedRWSet, rws...)
 	}
 
-	pvtRWSet = rwSets[DigKey{
+	pvtRWSet = rwSets[privdatacommon.DigKey{
 		Namespace:  ns2,
 		Collection: col2,
 		BlockSeq:   5,
@@ -381,7 +382,7 @@ func TestNewDataRetriever_EmptyWriteSet(t *testing.T) {
 
 	retriever := NewDataRetriever(dataStore)
 
-	rwSets, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
+	rwSets, _, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
 		Namespace:  ns1,
 		Collection: col1,
 		BlockSeq:   uint64(5),
@@ -393,7 +394,7 @@ func TestNewDataRetriever_EmptyWriteSet(t *testing.T) {
 	assertion.NoError(err)
 	assertion.NotEmpty(rwSets)
 
-	pvtRWSet := rwSets[DigKey{
+	pvtRWSet := rwSets[privdatacommon.DigKey{
 		Namespace:  ns1,
 		Collection: col1,
 		BlockSeq:   5,
@@ -431,7 +432,7 @@ func TestNewDataRetriever_FailedObtainConfigHistoryRetriever(t *testing.T) {
 
 	retriever := NewDataRetriever(dataStore)
 
-	_, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
+	_, _, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
 		Namespace:  ns1,
 		Collection: col1,
 		BlockSeq:   uint64(5),
@@ -485,7 +486,7 @@ func TestNewDataRetriever_NoCollectionConfig(t *testing.T) {
 	retriever := NewDataRetriever(dataStore)
 	assertion := assert.New(t)
 
-	_, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
+	_, _, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
 		Namespace:  ns1,
 		Collection: col1,
 		BlockSeq:   uint64(5),
@@ -495,7 +496,7 @@ func TestNewDataRetriever_NoCollectionConfig(t *testing.T) {
 	assertion.Error(err)
 	assertion.Contains(err.Error(), "cannot find recent collection config update below block sequence")
 
-	_, err = retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
+	_, _, err = retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
 		Namespace:  ns2,
 		Collection: col2,
 		BlockSeq:   uint64(5),
@@ -516,7 +517,7 @@ func TestNewDataRetriever_FailedGetLedgerHeight(t *testing.T) {
 	dataStore.On("LedgerHeight").Return(uint64(0), errors.New("failed to read ledger height"))
 	retriever := NewDataRetriever(dataStore)
 
-	_, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
+	_, _, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
 		Namespace:  ns1,
 		Collection: col1,
 		BlockSeq:   uint64(5),
@@ -542,7 +543,7 @@ func TestNewDataRetriever_FailToReadFromTransientStore(t *testing.T) {
 
 	retriever := NewDataRetriever(dataStore)
 
-	rwset, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
+	rwset, _, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
 		Namespace:  namespace,
 		Collection: collectionName,
 		BlockSeq:   2,
@@ -573,7 +574,7 @@ func TestNewDataRetriever_FailedToReadNext(t *testing.T) {
 
 	// Request digest for private data which is greater than current ledger height
 	// to make it query transient store for missed private data
-	rwSets, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
+	rwSets, _, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
 		Namespace:  namespace,
 		Collection: collectionName,
 		BlockSeq:   2,
@@ -621,7 +622,7 @@ func TestNewDataRetriever_EmptyPvtRWSetInTransientStore(t *testing.T) {
 
 	retriever := NewDataRetriever(dataStore)
 
-	rwSets, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
+	rwSets, _, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
 		Namespace:  namespace,
 		Collection: collectionName,
 		BlockSeq:   2,
@@ -632,7 +633,7 @@ func TestNewDataRetriever_EmptyPvtRWSetInTransientStore(t *testing.T) {
 	assertion := assert.New(t)
 	assertion.NoError(err)
 	assertion.NotEmpty(rwSets)
-	assertion.Empty(rwSets[DigKey{
+	assertion.Empty(rwSets[privdatacommon.DigKey{
 		Namespace:  namespace,
 		Collection: collectionName,
 		BlockSeq:   2,

@@ -19,14 +19,13 @@ import (
 	"strings"
 
 	"github.com/hyperledger/fabric/common/flogging"
-	"github.com/hyperledger/fabric/core/chaincode/platforms"
 	"github.com/hyperledger/fabric/core/chaincode/platforms/ccmetadata"
 	"github.com/hyperledger/fabric/core/chaincode/platforms/util"
 	cutil "github.com/hyperledger/fabric/core/container/util"
 	pb "github.com/hyperledger/fabric/protos/peer"
 )
 
-var logger = flogging.MustGetLogger("node-platform")
+var logger = flogging.MustGetLogger("chaincode.platform.node")
 
 // Platform for chaincodes written in Go
 type Platform struct {
@@ -88,7 +87,7 @@ func (nodePlatform *Platform) ValidateCodePackage(code []byte) error {
 	// the container itself needs to be the last line of defense and be configured to be
 	// resilient in enforcing constraints. However, we should still do our best to keep as much
 	// garbage out of the system as possible.
-	re := regexp.MustCompile(`(/)?src/.*`)
+	re := regexp.MustCompile(`^(/)?(src|META-INF)/.*`)
 	is := bytes.NewReader(code)
 	gr, err := gzip.NewReader(is)
 	if err != nil {
@@ -157,7 +156,7 @@ func (nodePlatform *Platform) GetDeploymentPayload(path string) ([]byte, error) 
 
 	logger.Debugf("Packaging node.js project from path %s", folder)
 
-	if err = cutil.WriteFolderToTarPackage(tw, folder, "node_modules", nil, nil); err != nil {
+	if err = cutil.WriteFolderToTarPackage(tw, folder, []string{"node_modules"}, nil, nil); err != nil {
 
 		logger.Errorf("Error writing folder to tar package %s", err)
 		return nil, fmt.Errorf("Error writing Chaincode package contents: %s", err)
@@ -202,7 +201,8 @@ func (nodePlatform *Platform) GenerateDockerBuild(path string, code []byte, tw *
 	return cutil.WriteBytesToPackage("binpackage.tar", binpackage.Bytes(), tw)
 }
 
-//GetMetadataProvider fetches metadata provider given deployment spec
-func (nodePlatform *Platform) GetMetadataProvider(code []byte) platforms.MetadataProvider {
-	return &ccmetadata.TargzMetadataProvider{Code: code}
+// GetMetadataProvider fetches metadata provider given deployment spec
+func (nodePlatform *Platform) GetMetadataAsTarEntries(code []byte) ([]byte, error) {
+	metadataProvider := &ccmetadata.TargzMetadataProvider{Code: code}
+	return metadataProvider.GetMetadataAsTarEntries()
 }

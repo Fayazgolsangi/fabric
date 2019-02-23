@@ -15,12 +15,13 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/hyperledger/fabric/common/chaincode"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/common/util"
 	"github.com/pkg/errors"
 )
 
-var logger = flogging.MustGetLogger("chaincode/persistence")
+var logger = flogging.MustGetLogger("chaincode.persistence")
 
 // IOReadWriter defines the interface needed for reading, writing, removing, and
 // checking for existence of a specified file
@@ -69,26 +70,40 @@ type Store struct {
 }
 
 // Save persists chaincode install package bytes with the given name
-// and version
-func (s *Store) Save(name, version string, ccInstallPkg []byte) error {
-	metadataJSON, err := toJSON(name, version)
-	if err != nil {
-		return err
+// and version. It returns the hash of the chaincode install package
+func (s *Store) Save(name, version string, ccInstallPkg []byte) ([]byte, error) {
+	hash := util.ComputeSHA256(ccInstallPkg)
+	hashString := hex.EncodeToString(hash)
+	metadataPath := filepath.Join(s.Path, hashString+".json")
+	var existingMetadata []*ChaincodeMetadata
+
+	if metadataBytes, err := s.ReadWriter.ReadFile(metadataPath); err == nil {
+		existingMetadata, err = fromJSON(metadataBytes)
+		if err != nil {
+			return nil, errors.WithMessage(err, fmt.Sprintf("error reading existing chaincode metadata at %s", metadataPath))
+		}
+
+		for _, metadata := range existingMetadata {
+			if metadata.Name == name && metadata.Version == version {
+				return nil, errors.Errorf("chaincode already installed with name '%s' and version '%s'", name, version)
+			}
+		}
 	}
 
-	hashString := hex.EncodeToString(util.ComputeSHA256(ccInstallPkg))
-	metadataPath := filepath.Join(s.Path, hashString+".json")
-	if _, err := s.ReadWriter.Stat(metadataPath); err == nil {
-		return errors.Errorf("chaincode metadata already exists at %s", metadataPath)
+	metadataJSON, err := toJSON(existingMetadata, name, version)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.ReadWriter.WriteFile(metadataPath, metadataJSON, 0600); err != nil {
+		return nil, errors.Wrapf(err, "error writing metadata file to %s", metadataPath)
 	}
 
 	ccInstallPkgPath := filepath.Join(s.Path, hashString+".bin")
 	if _, err := s.ReadWriter.Stat(ccInstallPkgPath); err == nil {
-		return errors.Errorf("ChaincodeInstallPackage already exists at %s", ccInstallPkgPath)
-	}
-
-	if err := s.ReadWriter.WriteFile(metadataPath, metadataJSON, 0600); err != nil {
-		return errors.Wrapf(err, "error writing metadata file to %s", metadataPath)
+		// chaincode install package was already installed so all
+		// that was needed was to update the metadata
+		return hash, nil
 	}
 
 	if err := s.ReadWriter.WriteFile(ccInstallPkgPath, ccInstallPkg, 0600); err != nil {
@@ -99,47 +114,48 @@ func (s *Store) Save(name, version string, ccInstallPkg []byte) error {
 		if err2 := s.ReadWriter.Remove(metadataPath); err2 != nil {
 			logger.Errorf("error removing metadata file at %s: %s", metadataPath, err2)
 		}
-		return err
+		return nil, err
 	}
 
-	return nil
+	return hash, nil
 }
 
 // Load loads a persisted chaincode install package bytes with the given hash
-// and also returns the name and version
-func (s *Store) Load(hash []byte) (ccInstallPkg []byte, name, version string, err error) {
+// and also returns the chaincode metadata (names and versions) of any chaincode
+// installed with a matching hash
+func (s *Store) Load(hash []byte) (ccInstallPkg []byte, metadata []*ChaincodeMetadata, err error) {
 	hashString := hex.EncodeToString(hash)
 	ccInstallPkgPath := filepath.Join(s.Path, hashString+".bin")
 	ccInstallPkg, err = s.ReadWriter.ReadFile(ccInstallPkgPath)
 	if err != nil {
 		err = errors.Wrapf(err, "error reading chaincode install package at %s", ccInstallPkgPath)
-		return nil, "", "", err
+		return nil, nil, err
 	}
 
 	metadataPath := filepath.Join(s.Path, hashString+".json")
-	name, version, err = s.LoadMetadata(metadataPath)
+	metadata, err = s.LoadMetadata(metadataPath)
 	if err != nil {
-		return nil, "", "", err
+		return nil, nil, err
 	}
 
-	return ccInstallPkg, name, version, nil
+	return ccInstallPkg, metadata, nil
 }
 
 // LoadMetadata loads the chaincode metadata stored at the specified path
-func (s *Store) LoadMetadata(path string) (name, version string, err error) {
+func (s *Store) LoadMetadata(path string) ([]*ChaincodeMetadata, error) {
 	metadataBytes, err := s.ReadWriter.ReadFile(path)
 	if err != nil {
 		err = errors.Wrapf(err, "error reading metadata at %s", path)
-		return "", "", err
+		return nil, err
 	}
-	ccMetadata := &ChaincodeMetadata{}
-	err = json.Unmarshal(metadataBytes, ccMetadata)
+	ccMetadata := []*ChaincodeMetadata{}
+	err = json.Unmarshal(metadataBytes, &ccMetadata)
 	if err != nil {
 		err = errors.Wrapf(err, "error unmarshaling metadata at %s", path)
-		return "", "", err
+		return nil, err
 	}
 
-	return ccMetadata.Name, ccMetadata.Version, nil
+	return ccMetadata, nil
 }
 
 // CodePackageNotFoundErr is the error returned when a code package cannot
@@ -156,30 +172,14 @@ func (e *CodePackageNotFoundErr) Error() string {
 // RetrieveHash retrieves the hash of a chaincode install package given the
 // name and version of the chaincode
 func (s *Store) RetrieveHash(name string, version string) ([]byte, error) {
-	files, err := s.ReadWriter.ReadDir(s.Path)
+	installedChaincodes, err := s.ListInstalledChaincodes()
 	if err != nil {
-		return nil, errors.Wrapf(err, "error reading chaincode directory at %s", s.Path)
+		return nil, errors.WithMessage(err, "error getting installed chaincodes")
 	}
 
-	var hash []byte
-	for _, file := range files {
-		if strings.HasSuffix(file.Name(), ".json") {
-			metadataPath := filepath.Join(s.Path, file.Name())
-			ccName, ccVersion, err := s.LoadMetadata(metadataPath)
-			if err != nil {
-				logger.Warning(err.Error())
-				continue
-			}
-
-			if ccName == name && ccVersion == version {
-				// split the file name and get just the hash
-				hashString := strings.Split(file.Name(), ".")[0]
-				hash, err = hex.DecodeString(hashString)
-				if err != nil {
-					return nil, errors.Wrapf(err, "error decoding hash from hex string: %s", hashString)
-				}
-				return hash, nil
-			}
+	for _, installedChaincode := range installedChaincodes {
+		if installedChaincode.Name == name && installedChaincode.Version == version {
+			return installedChaincode.Id, nil
 		}
 	}
 
@@ -191,22 +191,79 @@ func (s *Store) RetrieveHash(name string, version string) ([]byte, error) {
 	return nil, err
 }
 
+// ListInstalledChaincodes returns an array with information about the
+// chaincodes installed in the persistence store
+func (s *Store) ListInstalledChaincodes() ([]chaincode.InstalledChaincode, error) {
+	files, err := s.ReadWriter.ReadDir(s.Path)
+	if err != nil {
+		return nil, errors.Wrapf(err, "error reading chaincode directory at %s", s.Path)
+	}
+
+	installedChaincodes := []chaincode.InstalledChaincode{}
+	for _, file := range files {
+		if strings.HasSuffix(file.Name(), ".json") {
+			metadataPath := filepath.Join(s.Path, file.Name())
+			metadataArray, err := s.LoadMetadata(metadataPath)
+			if err != nil {
+				logger.Warning(err.Error())
+				continue
+			}
+
+			// split the file name and get just the hash
+			hashString := strings.Split(file.Name(), ".")[0]
+			hash, err := hex.DecodeString(hashString)
+			if err != nil {
+				return nil, errors.Wrapf(err, "error decoding hash from hex string: %s", hashString)
+			}
+			for _, metadata := range metadataArray {
+				installedChaincode := chaincode.InstalledChaincode{
+					Name:    metadata.Name,
+					Version: metadata.Version,
+					Id:      hash,
+				}
+				installedChaincodes = append(installedChaincodes, installedChaincode)
+			}
+		}
+	}
+	return installedChaincodes, nil
+}
+
+// GetChaincodeInstallPath returns the path where chaincodes
+// are installed
+func (s *Store) GetChaincodeInstallPath() string {
+	return s.Path
+}
+
 // ChaincodeMetadata holds the name and version of a chaincode
 type ChaincodeMetadata struct {
 	Name    string `json:"Name"`
 	Version string `json:"Version"`
 }
 
-func toJSON(name, version string) ([]byte, error) {
+func toJSON(metadataArray []*ChaincodeMetadata, name, version string) ([]byte, error) {
+	if metadataArray == nil {
+		metadataArray = []*ChaincodeMetadata{}
+	}
+
 	metadata := &ChaincodeMetadata{
 		Name:    name,
 		Version: version,
 	}
-
-	metadataBytes, err := json.Marshal(metadata)
+	metadataArray = append(metadataArray, metadata)
+	metadataArrayBytes, err := json.Marshal(metadataArray)
 	if err != nil {
 		return nil, errors.Wrap(err, "error marshaling name and version into JSON")
 	}
 
-	return metadataBytes, nil
+	return metadataArrayBytes, nil
+}
+
+func fromJSON(jsonBytes []byte) ([]*ChaincodeMetadata, error) {
+	metadata := []*ChaincodeMetadata{}
+	err := json.Unmarshal(jsonBytes, &metadata)
+	if err != nil {
+		return nil, errors.Wrap(err, "error unmarshaling metadata JSON")
+	}
+
+	return metadata, nil
 }

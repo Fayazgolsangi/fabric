@@ -21,7 +21,6 @@ import (
 	genesisconfig "github.com/hyperledger/fabric/common/tools/configtxgen/localconfig"
 	cb "github.com/hyperledger/fabric/protos/common"
 	"github.com/hyperledger/fabric/protos/utils"
-
 	"github.com/stretchr/testify/assert"
 )
 
@@ -93,10 +92,6 @@ func newMockChainCreator() *mockChainCreator {
 	return mcc
 }
 
-func (mcc *mockChainCreator) newChain(configTx *cb.Envelope) {
-	mcc.newChains = append(mcc.newChains, configTx)
-}
-
 func (mcc *mockChainCreator) ChannelsCount() int {
 	return len(mcc.newChains)
 }
@@ -134,7 +129,7 @@ func TestGoodProposal(t *testing.T) {
 
 	mcc := newMockChainCreator()
 
-	configUpdate, err := encoder.MakeChannelCreationTransaction(newChainID, nil, nil, configtxgentest.Load(genesisconfig.SampleSingleMSPChannelProfile))
+	configUpdate, err := encoder.MakeChannelCreationTransaction(newChainID, nil, configtxgentest.Load(genesisconfig.SampleSingleMSPChannelProfile))
 	assert.Nil(t, err, "Error constructing configtx")
 	ingressTx := makeConfigTxFromConfigUpdateTx(configUpdate)
 
@@ -149,7 +144,7 @@ func TestProposalRejectedByConfig(t *testing.T) {
 	mcc := newMockChainCreator()
 	mcc.NewChannelConfigErr = fmt.Errorf("desired err text")
 
-	configUpdate, err := encoder.MakeChannelCreationTransaction(newChainID, nil, nil, configtxgentest.Load(genesisconfig.SampleSingleMSPChannelProfile))
+	configUpdate, err := encoder.MakeChannelCreationTransaction(newChainID, nil, configtxgentest.Load(genesisconfig.SampleSingleMSPChannelProfile))
 	assert.Nil(t, err, "Error constructing configtx")
 	ingressTx := makeConfigTxFromConfigUpdateTx(configUpdate)
 
@@ -169,7 +164,7 @@ func TestNumChainsExceeded(t *testing.T) {
 	mcc.ms.msc.MaxChannelsCountVal = 1
 	mcc.newChains = make([]*cb.Envelope, 2)
 
-	configUpdate, err := encoder.MakeChannelCreationTransaction(newChainID, nil, nil, configtxgentest.Load(genesisconfig.SampleSingleMSPChannelProfile))
+	configUpdate, err := encoder.MakeChannelCreationTransaction(newChainID, nil, configtxgentest.Load(genesisconfig.SampleSingleMSPChannelProfile))
 	assert.Nil(t, err, "Error constructing configtx")
 	ingressTx := makeConfigTxFromConfigUpdateTx(configUpdate)
 

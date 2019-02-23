@@ -17,7 +17,7 @@ import (
 	"sync"
 
 	"github.com/miekg/pkcs11"
-	"github.com/op/go-logging"
+	"go.uber.org/zap/zapcore"
 )
 
 func loadLib(lib, pin, label string) (*pkcs11.Ctx, uint, *pkcs11.SessionHandle, error) {
@@ -195,21 +195,6 @@ func namedCurveFromOID(oid asn1.ObjectIdentifier) elliptic.Curve {
 	return nil
 }
 
-func oidFromNamedCurve(curve elliptic.Curve) (asn1.ObjectIdentifier, bool) {
-	switch curve {
-	case elliptic.P224():
-		return oidNamedCurveP224, true
-	case elliptic.P256():
-		return oidNamedCurveP256, true
-	case elliptic.P384():
-		return oidNamedCurveP384, true
-	case elliptic.P521():
-		return oidNamedCurveP521, true
-	}
-
-	return nil, false
-}
-
 func (csp *impl) generateECKey(curve asn1.ObjectIdentifier, ephemeral bool) (ski []byte, pubKey *ecdsa.PublicKey, err error) {
 	p11lib := csp.ctx
 	session := csp.getSession()
@@ -279,6 +264,32 @@ func (csp *impl) generateECKey(curve asn1.ObjectIdentifier, ephemeral bool) (ski
 		return nil, nil, fmt.Errorf("P11: set-ID-to-SKI[private] failed [%s]", err)
 	}
 
+	//Set CKA_Modifible to false for both public key and private keys
+	if csp.immutable {
+		setCKAModifiable := []*pkcs11.Attribute{
+			pkcs11.NewAttribute(pkcs11.CKA_MODIFIABLE, false),
+		}
+
+		_, pubCopyerror := p11lib.CopyObject(session, pub, setCKAModifiable)
+		if pubCopyerror != nil {
+			return nil, nil, fmt.Errorf("P11: Public Key copy failed with error [%s] . Please contact your HSM vendor", pubCopyerror)
+		}
+
+		pubKeyDestroyError := p11lib.DestroyObject(session, pub)
+		if pubKeyDestroyError != nil {
+			return nil, nil, fmt.Errorf("P11: Public Key destroy failed with error [%s]. Please contact your HSM vendor", pubCopyerror)
+		}
+
+		_, prvCopyerror := p11lib.CopyObject(session, prv, setCKAModifiable)
+		if prvCopyerror != nil {
+			return nil, nil, fmt.Errorf("P11: Private Key copy failed with error [%s]. Please contact your HSM vendor", prvCopyerror)
+		}
+		prvKeyDestroyError := p11lib.DestroyObject(session, prv)
+		if pubKeyDestroyError != nil {
+			return nil, nil, fmt.Errorf("P11: Private Key destroy failed with error [%s]. Please contact your HSM vendor", prvKeyDestroyError)
+		}
+	}
+
 	nistCurve := namedCurveFromOID(curve)
 	if curve == nil {
 		return nil, nil, fmt.Errorf("Cound not recognize Curve from OID")
@@ -290,7 +301,7 @@ func (csp *impl) generateECKey(curve asn1.ObjectIdentifier, ephemeral bool) (ski
 
 	pubGoKey := &ecdsa.PublicKey{Curve: nistCurve, X: x, Y: y}
 
-	if logger.IsEnabledFor(logging.DEBUG) {
+	if logger.IsEnabledFor(zapcore.DebugLevel) {
 		listAttrs(p11lib, session, prv)
 		listAttrs(p11lib, session, pub)
 	}
@@ -362,76 +373,6 @@ func (csp *impl) verifyP11ECDSA(ski []byte, msg []byte, R, S *big.Int, byteSize 
 	}
 
 	return true, nil
-}
-
-func (csp *impl) importECKey(curve asn1.ObjectIdentifier, privKey, ecPt []byte, ephemeral bool, keyType bool) (ski []byte, err error) {
-	p11lib := csp.ctx
-	session := csp.getSession()
-	defer csp.returnSession(session)
-
-	marshaledOID, err := asn1.Marshal(curve)
-	if err != nil {
-		return nil, fmt.Errorf("Could not marshal OID [%s]", err.Error())
-	}
-
-	var keyTemplate []*pkcs11.Attribute
-	if keyType == publicKeyFlag {
-		logger.Debug("Importing Public EC Key")
-
-		hash := sha256.Sum256(ecPt)
-		ski = hash[:]
-
-		publabel := hex.EncodeToString(ski)
-
-		// Add DER encoding for the CKA_EC_POINT
-		ecPt = append([]byte{0x04, byte(len(ecPt))}, ecPt...)
-
-		keyTemplate = []*pkcs11.Attribute{
-			pkcs11.NewAttribute(pkcs11.CKA_KEY_TYPE, pkcs11.CKK_EC),
-			pkcs11.NewAttribute(pkcs11.CKA_CLASS, pkcs11.CKO_PUBLIC_KEY),
-			pkcs11.NewAttribute(pkcs11.CKA_TOKEN, !ephemeral),
-			pkcs11.NewAttribute(pkcs11.CKA_VERIFY, true),
-			pkcs11.NewAttribute(pkcs11.CKA_EC_PARAMS, marshaledOID),
-
-			pkcs11.NewAttribute(pkcs11.CKA_ID, ski),
-			pkcs11.NewAttribute(pkcs11.CKA_LABEL, publabel),
-			pkcs11.NewAttribute(pkcs11.CKA_EC_POINT, ecPt),
-			pkcs11.NewAttribute(pkcs11.CKA_PRIVATE, false),
-		}
-	} else { // isPrivateKey
-		ski, err = csp.importECKey(curve, nil, ecPt, ephemeral, publicKeyFlag)
-		if err != nil {
-			return nil, fmt.Errorf("Failed importing private EC Key [%s]", err)
-		}
-
-		logger.Debugf("Importing Private EC Key [%d]\n%s\n", len(privKey)*8, hex.Dump(privKey))
-		prvlabel := hex.EncodeToString(ski)
-		keyTemplate = []*pkcs11.Attribute{
-			pkcs11.NewAttribute(pkcs11.CKA_KEY_TYPE, pkcs11.CKK_EC),
-			pkcs11.NewAttribute(pkcs11.CKA_CLASS, pkcs11.CKO_PRIVATE_KEY),
-			pkcs11.NewAttribute(pkcs11.CKA_TOKEN, !ephemeral),
-			pkcs11.NewAttribute(pkcs11.CKA_PRIVATE, false),
-			pkcs11.NewAttribute(pkcs11.CKA_SIGN, true),
-			pkcs11.NewAttribute(pkcs11.CKA_EC_PARAMS, marshaledOID),
-
-			pkcs11.NewAttribute(pkcs11.CKA_ID, ski),
-			pkcs11.NewAttribute(pkcs11.CKA_LABEL, prvlabel),
-			pkcs11.NewAttribute(pkcs11.CKR_ATTRIBUTE_SENSITIVE, false),
-			pkcs11.NewAttribute(pkcs11.CKA_EXTRACTABLE, true),
-			pkcs11.NewAttribute(pkcs11.CKA_VALUE, privKey),
-		}
-	}
-
-	keyHandle, err := p11lib.CreateObject(session, keyTemplate)
-	if err != nil {
-		return nil, fmt.Errorf("P11: keypair generate failed [%s]", err)
-	}
-
-	if logger.IsEnabledFor(logging.DEBUG) {
-		listAttrs(p11lib, session, keyHandle)
-	}
-
-	return ski, nil
 }
 
 const (
@@ -575,35 +516,6 @@ func listAttrs(p11lib *pkcs11.Ctx, session pkcs11.SessionHandle, obj pkcs11.Obje
 		// Would be friendlier if the bindings provided a way convert Attribute hex to string
 		logger.Debugf("ListAttr: type %d/0x%x, length %d\n%s", a.Type, a.Type, len(a.Value), hex.Dump(a.Value))
 	}
-}
-
-func (csp *impl) getSecretValue(ski []byte) []byte {
-	p11lib := csp.ctx
-	session := csp.getSession()
-	defer csp.returnSession(session)
-
-	keyHandle, err := findKeyPairFromSKI(p11lib, session, ski, privateKeyFlag)
-	if err != nil {
-		logger.Warningf("P11: findKeyPairFromSKI [%s]\n", err)
-	}
-	var privKey []byte
-	template := []*pkcs11.Attribute{
-		pkcs11.NewAttribute(pkcs11.CKA_VALUE, privKey),
-	}
-
-	// certain errors are tolerated, if value is missing
-	attr, err := p11lib.GetAttributeValue(session, *keyHandle, template)
-	if err != nil {
-		logger.Warningf("P11: get(attrlist) [%s]\n", err)
-	}
-
-	for _, a := range attr {
-		// Would be friendlier if the bindings provided a way convert Attribute hex to string
-		logger.Debugf("ListAttr: type %d/0x%x, length %d\n%s", a.Type, a.Type, len(a.Value), hex.Dump(a.Value))
-		return a.Value
-	}
-	logger.Warningf("No Key Value found: %v", err)
-	return nil
 }
 
 var (

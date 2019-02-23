@@ -7,13 +7,13 @@ SPDX-License-Identifier: Apache-2.0
 package chaincode
 
 import (
-	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"testing"
 	"time"
 
-	"github.com/hyperledger/fabric/common/flogging"
+	"github.com/hyperledger/fabric/common/flogging/floggingtest"
 	"github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/msp"
 	ccapi "github.com/hyperledger/fabric/peer/chaincode/api"
@@ -24,10 +24,8 @@ import (
 	cb "github.com/hyperledger/fabric/protos/common"
 	pb "github.com/hyperledger/fabric/protos/peer"
 	"github.com/hyperledger/fabric/protos/utils"
-	logging "github.com/op/go-logging"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
-	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 )
 
@@ -35,7 +33,6 @@ func TestInvokeCmd(t *testing.T) {
 	defer viper.Reset()
 	defer resetFlags()
 
-	InitMSP()
 	resetFlags()
 	mockCF, err := getMockChaincodeCmdFactory()
 	assert.NoError(t, err, "Error getting mock chaincode command factory")
@@ -172,14 +169,10 @@ func TestInvokeCmdSimulateESCCPluginResponse(t *testing.T) {
 	mockCF.EndorserClients[0] = common.GetMockEndorserClient(mockResponse, nil)
 
 	// set logger to logger with a backend that writes to a byte buffer
-	var buffer bytes.Buffer
-	logger.SetBackend(logging.AddModuleLevel(logging.NewLogBackend(&buffer, "", 0)))
-	// reset the logger after test
-	defer func() {
-		flogging.Reset()
-	}()
-	// make sure buffer is "clean" before running the invoke
-	buffer.Reset()
+	oldLogger := logger
+	defer func() { logger = oldLogger }()
+	l, recorder := floggingtest.NewTestLogger(t)
+	logger = l
 
 	cmd := invokeCmd(mockCF)
 	addFlags(cmd)
@@ -190,13 +183,13 @@ func TestInvokeCmdSimulateESCCPluginResponse(t *testing.T) {
 	assert.NoError(t, err, "Run chaincode invoke cmd error")
 	err = cmd.Execute()
 	assert.Nil(t, err)
-	assert.Regexp(t, "Chaincode invoke successful", buffer.String())
-	assert.Regexp(t, fmt.Sprintf("result: <nil>"), buffer.String())
+
+	assert.NotEmpty(t, recorder.MessagesContaining("Chaincode invoke successful"), "missing invoke success log record")
+	assert.NotEmpty(t, recorder.MessagesContaining("result: <nil>"), "missing result log record")
 }
 
 func TestInvokeCmdEndorsementError(t *testing.T) {
 	defer resetFlags()
-	InitMSP()
 	mockCF, err := getMockChaincodeCmdFactoryWithErr()
 	assert.NoError(t, err, "Error getting mock chaincode command factory")
 
@@ -210,7 +203,6 @@ func TestInvokeCmdEndorsementError(t *testing.T) {
 
 func TestInvokeCmdEndorsementFailure(t *testing.T) {
 	defer resetFlags()
-	InitMSP()
 	ccRespStatus := [2]int32{502, 400}
 	ccRespPayload := [][]byte{[]byte("Invalid function name"), []byte("Incorrect parameters")}
 
@@ -226,7 +218,7 @@ func TestInvokeCmdEndorsementFailure(t *testing.T) {
 		err = cmd.Execute()
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "endorsement failure during invoke")
-		assert.Contains(t, err.Error(), fmt.Sprintf("chaincode result: status:%d payload:\"%s\"", ccRespStatus[i], ccRespPayload[i]))
+		assert.Contains(t, err.Error(), fmt.Sprintf("response: status:%d payload:\"%s\"", ccRespStatus[i], ccRespPayload[i]))
 	}
 }
 
@@ -242,7 +234,7 @@ func getMockChaincodeCmdFactory() (*ChaincodeCmdFactory, error) {
 	}
 	mockEndorserClients := []pb.EndorserClient{common.GetMockEndorserClient(mockResponse, nil), common.GetMockEndorserClient(mockResponse, nil)}
 	mockBroadcastClient := common.GetMockBroadcastClient(nil)
-	mockDC := getMockDeliverClient()
+	mockDC := getMockDeliverClientResponseWithTxID("txid0")
 	mockDeliverClients := []api.PeerDeliverClient{mockDC, mockDC}
 	mockCF := &ChaincodeCmdFactory{
 		EndorserClients: mockEndorserClients,
@@ -264,7 +256,7 @@ func getMockChaincodeCmdFactoryWithErr() (*ChaincodeCmdFactory, error) {
 	errMsg := "invoke error"
 	mockEndorserClients := []pb.EndorserClient{common.GetMockEndorserClient(nil, errors.New(errMsg))}
 	mockBroadcastClient := common.GetMockBroadcastClient(nil)
-	mockDeliverClients := []api.PeerDeliverClient{getMockDeliverClient()}
+	mockDeliverClients := []api.PeerDeliverClient{getMockDeliverClientResponseWithTxID("txid0")}
 	mockCF := &ChaincodeCmdFactory{
 		EndorserClients: mockEndorserClients,
 		Signer:          signer,
@@ -300,7 +292,7 @@ func getMockChaincodeCmdFactoryEndorsementFailure(ccRespStatus int32, ccRespPayl
 
 	mockEndorserClients := []pb.EndorserClient{common.GetMockEndorserClient(mockRespFailure, nil)}
 	mockBroadcastClient := common.GetMockBroadcastClient(nil)
-	mockDeliverClients := []api.PeerDeliverClient{getMockDeliverClient()}
+	mockDeliverClients := []api.PeerDeliverClient{getMockDeliverClientResponseWithTxID("txid0")}
 	mockCF := &ChaincodeCmdFactory{
 		EndorserClients: mockEndorserClients,
 		Signer:          signer,
@@ -318,30 +310,25 @@ func createCIS() *pb.ChaincodeInvocationSpec {
 			Input:       &pb.ChaincodeInput{Args: [][]byte{[]byte("arg1"), []byte("arg2")}}}}
 }
 
-// creates a mock deliver client with a response that contains txid0
-func getMockDeliverClient() *cmock.PeerDeliverClient {
-	return getMockDeliverClientResponseWithTxID("txid0")
+// non recording mock of deliver api
+type dummyDeliver struct {
+	resp *pb.DeliverResponse
+	err  error
 }
+
+func (d *dummyDeliver) Send(*cb.Envelope) error            { return nil }
+func (d *dummyDeliver) Recv() (*pb.DeliverResponse, error) { return d.resp, d.err }
+func (d *dummyDeliver) CloseSend() error                   { return nil }
 
 func getMockDeliverClientResponseWithTxID(txID string) *cmock.PeerDeliverClient {
 	mockDC := &cmock.PeerDeliverClient{}
 	mockDC.DeliverFilteredStub = func(ctx context.Context, opts ...grpc.CallOption) (ccapi.Deliver, error) {
-		return getMockDeliverConnectionResponseWithTxID(txID), nil
+		resp := &pb.DeliverResponse{
+			Type: &pb.DeliverResponse_FilteredBlock{FilteredBlock: createFilteredBlock(txID)},
+		}
+		return &dummyDeliver{resp: resp}, nil
 	}
-	// mockDC.DeliverReturns(nil, fmt.Errorf("not implemented!!"))
 	return mockDC
-}
-
-func getMockDeliverConnectionResponseWithTxID(txID string) *mock.Deliver {
-	mockDF := &mock.Deliver{}
-	resp := &pb.DeliverResponse{
-		Type: &pb.DeliverResponse_FilteredBlock{
-			FilteredBlock: createFilteredBlock(txID),
-		},
-	}
-	mockDF.RecvReturns(resp, nil)
-	mockDF.CloseSendReturns(nil)
-	return mockDF
 }
 
 func getMockDeliverClientRespondsWithFilteredBlocks(fb []*pb.FilteredBlock) *cmock.PeerDeliverClient {
@@ -374,7 +361,7 @@ func getMockDeliverClientRegisterAfterDelay(delayChan chan struct{}) *cmock.Peer
 	return mockDC
 }
 
-func getMockDeliverClientRespondAfterDelay(delayChan chan struct{}) *cmock.PeerDeliverClient {
+func getMockDeliverClientRespondAfterDelay(delayChan chan struct{}, txID string) *cmock.PeerDeliverClient {
 	mockDC := &cmock.PeerDeliverClient{}
 	mockDC.DeliverFilteredStub = func(ctx context.Context, opts ...grpc.CallOption) (ccapi.Deliver, error) {
 		mockDF := &mock.Deliver{}
@@ -382,7 +369,7 @@ func getMockDeliverClientRespondAfterDelay(delayChan chan struct{}) *cmock.PeerD
 			<-delayChan
 			resp := &pb.DeliverResponse{
 				Type: &pb.DeliverResponse_FilteredBlock{
-					FilteredBlock: createFilteredBlock(),
+					FilteredBlock: createFilteredBlock(txID),
 				},
 			}
 			return resp, nil

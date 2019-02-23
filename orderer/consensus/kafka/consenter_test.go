@@ -12,17 +12,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Shopify/sarama"
-	"github.com/golang/protobuf/proto"
 	"github.com/hyperledger/fabric/common/flogging"
 	mockconfig "github.com/hyperledger/fabric/common/mocks/config"
-	localconfig "github.com/hyperledger/fabric/orderer/common/localconfig"
+	"github.com/hyperledger/fabric/orderer/common/localconfig"
 	"github.com/hyperledger/fabric/orderer/consensus"
+	"github.com/hyperledger/fabric/orderer/consensus/kafka/mock"
+	mockconsensus "github.com/hyperledger/fabric/orderer/consensus/mocks"
 	mockmultichannel "github.com/hyperledger/fabric/orderer/mocks/common/multichannel"
 	cb "github.com/hyperledger/fabric/protos/common"
 	ab "github.com/hyperledger/fabric/protos/orderer"
 	"github.com/hyperledger/fabric/protos/utils"
+
+	"github.com/Shopify/sarama"
+	"github.com/golang/protobuf/proto"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 var mockRetryOptions = localconfig.Retry{
@@ -69,11 +73,12 @@ func init() {
 }
 
 func TestNew(t *testing.T) {
-	_ = consensus.Consenter(New(mockLocalConfig.Kafka))
+	c, _ := New(mockLocalConfig, &mock.MetricsProvider{}, &mock.HealthChecker{}, &mockconsensus.FakeMigrationController{})
+	_ = consensus.Consenter(c)
 }
 
 func TestHandleChain(t *testing.T) {
-	consenter := consensus.Consenter(New(mockLocalConfig.Kafka))
+	consenter, _ := New(mockLocalConfig, &mock.MetricsProvider{}, &mock.HealthChecker{}, &mockconsensus.FakeMigrationController{})
 
 	oldestOffset := int64(0)
 	newestOffset := int64(5)
@@ -103,9 +108,23 @@ func TestHandleChain(t *testing.T) {
 	}
 
 	mockMetadata := &cb.Metadata{Value: utils.MarshalOrPanic(&ab.KafkaMetadata{LastOffsetPersisted: newestOffset - 1})}
-
 	_, err := consenter.HandleChain(mockSupport, mockMetadata)
 	assert.NoError(t, err, "Expected the HandleChain call to return without errors")
+}
+
+func TestMigration(t *testing.T) {
+	consenter, _ := New(mockLocalConfig, &mock.MetricsProvider{}, &mock.HealthChecker{}, &mockconsensus.FakeMigrationController{})
+	consenterimpl := consenter.(*consenterImpl)
+	require.NotNil(t, consenterimpl.migrationController())
+	assert.NoError(t, consenterimpl.migrationController().ConsensusMigrationStart(111))
+	assert.NoError(t, consenterimpl.migrationController().ConsensusMigrationCommit())
+	assert.Equal(t, "", consenterimpl.bootstrapFile())
+
+	mockLocalConfig.General.GenesisFile = "abc.genesis.block"
+	mockLocalConfig.General.GenesisMethod = "file"
+	consenter, _ = New(mockLocalConfig, &mock.MetricsProvider{}, &mock.HealthChecker{}, &mockconsensus.FakeMigrationController{})
+	consenterimpl = consenter.(*consenterImpl)
+	assert.Equal(t, mockLocalConfig.General.GenesisFile, consenterimpl.bootstrapFile())
 }
 
 // Test helper functions and mock objects defined here
@@ -189,8 +208,8 @@ func setupTestLogging(logLevel string) {
 	// This call allows us to (a) get the logging backend initialization that
 	// takes place in the `flogging` package, and (b) adjust the verbosity of
 	// the logs when running tests on this package.
-	flogging.SetModuleLevel(pkgLogID, logLevel)
-	flogging.SetModuleLevel(saramaLogID, logLevel)
+	spec := fmt.Sprintf("orderer.consensus.kafka=%s", logLevel)
+	flogging.ActivateSpec(spec)
 }
 
 func tamperBytes(original []byte) []byte {

@@ -8,7 +8,9 @@ package fabenc
 
 import (
 	"io"
+	"time"
 
+	zaplogfmt "github.com/sykesm/zap-logfmt"
 	"go.uber.org/zap/buffer"
 	"go.uber.org/zap/zapcore"
 )
@@ -17,9 +19,8 @@ import (
 // go-logging based format specifier.
 type FormatEncoder struct {
 	zapcore.Encoder
-	formatters     []Formatter
-	pool           buffer.Pool
-	consoleEncoder zapcore.Encoder
+	formatters []Formatter
+	pool       buffer.Pool
 }
 
 // A Formatter is used to format and write data from a zap log entry.
@@ -27,36 +28,24 @@ type Formatter interface {
 	Format(w io.Writer, entry zapcore.Entry, fields []zapcore.Field)
 }
 
-// NewFormatEncoder creates a zapcore.Encoder that supports a subset of the
-// formats provided by go-logging.
-//
-// The op-loggng specifiers supported by this formatter are:
-//   - %{color} - level specific SGR color escape or SGR reset
-//   - %{id} - a unique log sequence number
-//   - %{level} - the log level of the entry
-//   - %{message} - the log message
-//   - %{module} - the zap logger name
-//   - %{shortfunc} - the name of the function creating the log record
-//   - %{time} - the time the log entry was created
-//
-// Specifiers may include an optional format verb:
-//   - color: reset|bold
-//   - id: a fmt style numeric formatter without the leading %
-//   - level: a fmt style string formatter without the leading %
-//   - message: a fmt style string formatter without the leading %
-//   - module: a fmt style string formatter without the leading %
-//
-func NewFormatEncoder(formatSpec string) (*FormatEncoder, error) {
-	formatters, err := ParseFormat(formatSpec)
-	if err != nil {
-		return nil, err
-	}
-
+func NewFormatEncoder(formatters ...Formatter) *FormatEncoder {
 	return &FormatEncoder{
-		Encoder:    zapcore.NewConsoleEncoder(zapcore.EncoderConfig{LineEnding: "\n"}),
+		Encoder: zaplogfmt.NewEncoder(zapcore.EncoderConfig{
+			MessageKey:     "", // disable
+			LevelKey:       "", // disable
+			TimeKey:        "", // disable
+			NameKey:        "", // disable
+			CallerKey:      "", // disable
+			StacktraceKey:  "", // disable
+			LineEnding:     "\n",
+			EncodeDuration: zapcore.StringDurationEncoder,
+			EncodeTime: func(t time.Time, enc zapcore.PrimitiveArrayEncoder) {
+				enc.AppendString(t.Format("2006-01-02T15:04:05.999Z07:00"))
+			},
+		}),
 		formatters: formatters,
 		pool:       buffer.NewPool(),
-	}, nil
+	}
 }
 
 // Clone creates a new instance of this encoder with the same configuration.

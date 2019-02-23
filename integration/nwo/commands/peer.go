@@ -88,10 +88,84 @@ func (c ChannelFetch) Args() []string {
 	return args
 }
 
+type ChaincodePackagePlusLifecycle struct {
+	Path       string
+	Lang       string
+	OutputFile string
+}
+
+func (c ChaincodePackagePlusLifecycle) SessionName() string {
+	return "peer-chaincode-package"
+}
+
+func (c ChaincodePackagePlusLifecycle) Args() []string {
+	args := []string{
+		"chaincode", "package",
+		"--newLifecycle",
+		"--path", c.Path,
+		"--lang", c.Lang,
+		c.OutputFile,
+	}
+
+	return args
+}
+
+type ChaincodePackage struct {
+	Name       string
+	Version    string
+	Path       string
+	Lang       string
+	OutputFile string
+}
+
+func (c ChaincodePackage) SessionName() string {
+	return "peer-chaincode-package"
+}
+
+func (c ChaincodePackage) Args() []string {
+	args := []string{
+		"chaincode", "package",
+		"--name", c.Name,
+		"--version", c.Version,
+		"--path", c.Path,
+		c.OutputFile,
+	}
+
+	if c.Lang != "" {
+		args = append(args, "--lang", c.Lang)
+	}
+
+	return args
+}
+
+type ChaincodeInstallPlusLifecycle struct {
+	Name        string
+	Version     string
+	PackageFile string
+}
+
+func (c ChaincodeInstallPlusLifecycle) SessionName() string {
+	return "peer-chaincode-install"
+}
+
+func (c ChaincodeInstallPlusLifecycle) Args() []string {
+	args := []string{
+		"chaincode", "install",
+		"--newLifecycle",
+		"--name", c.Name,
+		"--version", c.Version,
+		c.PackageFile,
+	}
+
+	return args
+}
+
 type ChaincodeInstall struct {
-	Name    string
-	Version string
-	Path    string
+	Name        string
+	Version     string
+	Path        string
+	Lang        string
+	PackageFile string
 }
 
 func (c ChaincodeInstall) SessionName() string {
@@ -99,12 +173,27 @@ func (c ChaincodeInstall) SessionName() string {
 }
 
 func (c ChaincodeInstall) Args() []string {
-	return []string{
+	args := []string{
 		"chaincode", "install",
-		"--name", c.Name,
-		"--version", c.Version,
-		"--path", c.Path,
 	}
+
+	if c.PackageFile != "" {
+		args = append(args, c.PackageFile)
+	}
+	if c.Name != "" {
+		args = append(args, "--name", c.Name)
+	}
+	if c.Version != "" {
+		args = append(args, "--version", c.Version)
+	}
+	if c.Path != "" {
+		args = append(args, "--path", c.Path)
+	}
+	if c.Lang != "" {
+		args = append(args, "--lang", c.Lang)
+	}
+
+	return args
 }
 
 type ChaincodeInstantiate struct {
@@ -114,6 +203,7 @@ type ChaincodeInstantiate struct {
 	Version           string
 	Ctor              string
 	Policy            string
+	Lang              string
 	CollectionsConfig string
 }
 
@@ -134,7 +224,24 @@ func (c ChaincodeInstantiate) Args() []string {
 	if c.CollectionsConfig != "" {
 		args = append(args, "--collections-config", c.CollectionsConfig)
 	}
+
+	if c.Lang != "" {
+		args = append(args, "--lang", c.Lang)
+	}
+
 	return args
+}
+
+type ChaincodeListInstalledPlusLifecycle struct{}
+
+func (c ChaincodeListInstalledPlusLifecycle) SessionName() string {
+	return "peer-chaincode-list-installed-_lifecycle"
+}
+
+func (c ChaincodeListInstalledPlusLifecycle) Args() []string {
+	return []string{
+		"chaincode", "list", "--installed", "--newLifecycle",
+	}
 }
 
 type ChaincodeListInstalled struct{}
@@ -281,9 +388,24 @@ func (c ChannelUpdate) Args() []string {
 	}
 }
 
+type ChannelInfo struct {
+	ChannelID string
+}
+
+func (c ChannelInfo) SessionName() string {
+	return "peer-channel-info"
+}
+
+func (c ChannelInfo) Args() []string {
+	return []string{
+		"channel", "getinfo",
+		"-c", c.ChannelID,
+	}
+}
+
 type LoggingSetLevel struct {
-	ModuleRegexp string
-	Level        string
+	Logger string
+	Level  string
 }
 
 func (l LoggingSetLevel) SessionName() string {
@@ -292,6 +414,6 @@ func (l LoggingSetLevel) SessionName() string {
 
 func (l LoggingSetLevel) Args() []string {
 	return []string{
-		"logging", "setlevel", l.ModuleRegexp, l.Level,
+		"logging", "setlevel", l.Logger, l.Level,
 	}
 }
